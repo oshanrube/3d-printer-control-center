@@ -8,7 +8,13 @@ class KlipperDashboard {
         this.websockets = new Map(); // Store WebSocket connections for each printer
         this.reconnectTimers = new Map(); // Store reconnection timers
         this.printerCache = new Map(); // Cache printer data to merge updates
-        
+        this.printerStates = new Map(); // id -> { state, progress } for fleet overview + ordering
+        this.currentFilter = 'all';
+        this.showWebcams = (localStorage.getItem('showWebcams') ?? '1') === '1';
+        this.theme = localStorage.getItem('theme') ||
+            ((window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) ? 'light' : 'dark');
+        this.applyTheme();
+
         // Migrate any legacy data formats/URLs before proceeding
         this.migrateLegacyWebcamUrls();
         
@@ -88,58 +94,103 @@ class KlipperDashboard {
     }
 
     init() {
+        document.body.classList.toggle('hide-webcams', !this.showWebcams);
+        const wc = document.getElementById('toggleWebcams');
+        if (wc) wc.setAttribute('aria-pressed', String(this.showWebcams));
+
         this.setupEventListeners();
         this.updateNotificationButton();
         this.renderPrinters();
         this.startWebSocketConnections();
-        
+
         // Set poll interval input value
         document.getElementById('pollInterval').value = this.pollInterval;
     }
 
+    applyTheme() {
+        document.documentElement.setAttribute('data-theme', this.theme);
+        const meta = document.querySelector('meta[name="theme-color"]');
+        if (meta) meta.setAttribute('content', this.theme === 'light' ? '#eef1f6' : '#0f1115');
+    }
+
+    toggleTheme() {
+        this.theme = this.theme === 'light' ? 'dark' : 'light';
+        localStorage.setItem('theme', this.theme);
+        this.applyTheme();
+    }
+
+    toggleWebcams() {
+        this.showWebcams = !this.showWebcams;
+        localStorage.setItem('showWebcams', this.showWebcams ? '1' : '0');
+        document.body.classList.toggle('hide-webcams', !this.showWebcams);
+        const wc = document.getElementById('toggleWebcams');
+        if (wc) wc.setAttribute('aria-pressed', String(this.showWebcams));
+    }
+
     setupEventListeners() {
-        // Add printer button
         document.getElementById('addPrinter').addEventListener('click', () => {
-            document.getElementById('addPrinterModal').style.display = 'block';
+            this.openModal('addPrinterModal');
+        });
+
+        // Theme toggle
+        const themeBtn = document.getElementById('themeToggle');
+        if (themeBtn) themeBtn.addEventListener('click', () => this.toggleTheme());
+
+        // Webcam show/hide
+        const webcamBtn = document.getElementById('toggleWebcams');
+        if (webcamBtn) webcamBtn.addEventListener('click', () => this.toggleWebcams());
+
+        // Settings panel
+        const settingsBtn = document.getElementById('settingsBtn');
+        const settingsPanel = document.getElementById('settingsPanel');
+        if (settingsBtn && settingsPanel) {
+            settingsBtn.addEventListener('click', () => {
+                const open = settingsPanel.hasAttribute('hidden');
+                if (open) settingsPanel.removeAttribute('hidden');
+                else settingsPanel.setAttribute('hidden', '');
+                settingsBtn.setAttribute('aria-expanded', String(open));
+            });
+        }
+
+        // Overview tiles act as status filters
+        document.querySelectorAll('.overview .stat').forEach(tile => {
+            tile.addEventListener('click', () => this.applyFilter(tile.dataset.filter));
         });
 
         // Enable notifications button
         const enableBtn = document.getElementById('enableNotifications');
         if (enableBtn) {
-            enableBtn.addEventListener('click', () => {
-                this.requestNotificationPermission();
-            });
+            enableBtn.addEventListener('click', () => this.requestNotificationPermission());
         }
 
         // Test notification button
         const testBtn = document.getElementById('testNotification');
         if (testBtn) {
             testBtn.addEventListener('click', () => {
-                const now = new Date();
-                const timeStr = now.toLocaleString();
-                this.showNotification('Klipper Dashboard', `This is a test notification (${timeStr})`);
+                const timeStr = new Date().toLocaleString();
+                this.showNotification('Control Center', `This is a test notification (${timeStr})`);
             });
         }
 
-        // Close modals
+        // Close modals (× button)
         document.querySelectorAll('.close').forEach(closeBtn => {
             closeBtn.addEventListener('click', (e) => {
                 const modal = e.target.closest('.modal');
-                if (modal) {
-                    modal.style.display = 'none';
-                }
+                if (modal) modal.classList.remove('open');
             });
         });
 
-        // Close modal when clicking outside
+        // Close modal when clicking the backdrop
         window.addEventListener('click', (event) => {
-            const addModal = document.getElementById('addPrinterModal');
-            const editModal = document.getElementById('editPrinterModal');
-            if (event.target === addModal) {
-                addModal.style.display = 'none';
+            if (event.target.classList && event.target.classList.contains('modal')) {
+                event.target.classList.remove('open');
             }
-            if (event.target === editModal) {
-                editModal.style.display = 'none';
+        });
+
+        // Close modal on Escape
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                document.querySelectorAll('.modal.open').forEach(m => m.classList.remove('open'));
             }
         });
 
@@ -159,6 +210,42 @@ class KlipperDashboard {
         document.getElementById('saveSettings').addEventListener('click', () => {
             this.saveSettings();
         });
+    }
+
+    openModal(id) {
+        const m = document.getElementById(id);
+        if (m) m.classList.add('open');
+    }
+
+    closeModal(id) {
+        const m = document.getElementById(id);
+        if (m) m.classList.remove('open');
+    }
+
+    applyFilter(filter) {
+        this.currentFilter = (this.currentFilter === filter && filter !== 'all') ? 'all' : (filter || 'all');
+        document.querySelectorAll('.overview .stat').forEach(t => {
+            t.classList.toggle('active', t.dataset.filter === this.currentFilter && this.currentFilter !== 'all');
+        });
+        this.printers.forEach(p => this.applyCardVisibility(p.id));
+    }
+
+    // Map a raw printer state to the filter bucket used by the overview tiles
+    filterBucket(state) {
+        if (state === 'printing' || state === 'paused') return 'printing';
+        if (state === 'ready') return 'ready';
+        if (state === 'complete') return 'complete';
+        if (state === 'offline' || state === 'disabled') return 'offline';
+        return 'ready';
+    }
+
+    applyCardVisibility(printerId) {
+        const card = document.getElementById(`card-${printerId}`);
+        if (!card) return;
+        const st = this.printerStates.get(printerId);
+        const bucket = this.filterBucket(st ? st.state : 'offline');
+        const show = this.currentFilter === 'all' || this.currentFilter === bucket;
+        card.style.display = show ? '' : 'none';
     }
 
     async requestNotificationPermission() {
@@ -186,32 +273,37 @@ class KlipperDashboard {
     updateNotificationButton() {
         const enableBtn = document.getElementById('enableNotifications');
         if (!enableBtn) return;
+        const ico = enableBtn.querySelector('.btn-ico');
+        const setIco = (c) => { if (ico) ico.textContent = c; };
 
         if (!('Notification' in window)) {
-            enableBtn.textContent = 'Notifications Not Supported';
+            enableBtn.className = 'btn btn-ghost notification-btn disabled';
             enableBtn.disabled = true;
-            enableBtn.className = 'notification-btn disabled';
+            enableBtn.title = 'Notifications not supported';
+            setIco('🔕');
             return;
         }
 
-        const permission = Notification.permission;
-        switch (permission) {
+        switch (Notification.permission) {
             case 'granted':
-                enableBtn.textContent = '✓ Notifications Enabled';
+                enableBtn.className = 'btn btn-ghost notification-btn enabled';
                 enableBtn.disabled = true;
-                enableBtn.className = 'notification-btn enabled';
+                enableBtn.title = 'Notifications enabled';
+                setIco('🔔');
                 this.notificationsEnabled = true;
                 break;
             case 'denied':
-                enableBtn.textContent = '✗ Notifications Blocked';
+                enableBtn.className = 'btn btn-ghost notification-btn blocked';
                 enableBtn.disabled = false;
-                enableBtn.className = 'notification-btn blocked';
+                enableBtn.title = 'Notifications blocked — click for help';
+                setIco('🔕');
                 this.notificationsEnabled = false;
                 break;
-            default: // 'default'
-                enableBtn.textContent = 'Enable Notifications';
+            default:
+                enableBtn.className = 'btn btn-ghost notification-btn';
                 enableBtn.disabled = false;
-                enableBtn.className = 'notification-btn';
+                enableBtn.title = 'Enable notifications';
+                setIco('🔔');
                 this.notificationsEnabled = false;
         }
     }
@@ -277,7 +369,7 @@ class KlipperDashboard {
         
         // Reset form and close modal
         document.getElementById('addPrinterForm').reset();
-        document.getElementById('addPrinterModal').style.display = 'none';
+        this.closeModal('addPrinterModal');
     }
 
     editPrinter(id) {
@@ -290,9 +382,9 @@ class KlipperDashboard {
         
         // Store the printer ID for saving later
         this.editingPrinterId = id;
-        
+
         // Show the edit modal
-        document.getElementById('editPrinterModal').style.display = 'block';
+        this.openModal('editPrinterModal');
     }
 
     saveEditedPrinter() {
@@ -344,12 +436,20 @@ class KlipperDashboard {
         
         // Reset form and close modal
         document.getElementById('editPrinterForm').reset();
-        document.getElementById('editPrinterModal').style.display = 'none';
+        this.closeModal('editPrinterModal');
         this.editingPrinterId = null;
     }
 
     removePrinter(id) {
         if (confirm('Are you sure you want to remove this printer?')) {
+            // Tear down any live connection/timer for this printer
+            const ws = this.websockets.get(id);
+            if (ws) { try { ws.close(); } catch (_) {} }
+            this.websockets.delete(id);
+            const timer = this.reconnectTimers.get(id);
+            if (timer) { clearTimeout(timer); this.reconnectTimers.delete(id); }
+            this.printerStates.delete(id);
+
             this.printers = this.printers.filter(printer => printer.id !== id);
             this.savePrinters();
             this.renderPrinters();
@@ -402,11 +502,15 @@ class KlipperDashboard {
     renderPrinters() {
         const grid = document.getElementById('printerGrid');
         grid.innerHTML = '';
+        this.printerStates.clear();
 
         this.printers.forEach(printer => {
             const card = this.createPrinterCard(printer);
             grid.appendChild(card);
         });
+
+        this.updateEmptyState();
+        this.updateOverview();
 
         // Fetch initial status for all printers
         this.updateAllPrinterStatus();
@@ -415,58 +519,126 @@ class KlipperDashboard {
     createPrinterCard(printer) {
         const card = document.createElement('div');
         card.className = 'printer-card';
+        card.id = `card-${printer.id}`;
+        const ip = this.getHostFromIp(printer.ip);
+        const webcamUrl = printer.webcamUrl || this.getWebcamUrl(printer.ip);
         card.innerHTML = `
-            <button class="remove-printer" onclick="dashboard.removePrinter(${printer.id})" title="Remove Printer">×</button>
-            <button class="edit-printer" onclick="dashboard.editPrinter(${printer.id})" title="Edit Printer">✏️</button>
-            <button class="disable-printer" onclick="dashboard.togglePrinterDisabled(${printer.id})" title="${printer.disabled ? 'Enable' : 'Disable'} Printer">${printer.disabled ? '⏻' : '⏸'}</button>
+            <div class="card-actions">
+                <button class="icon-btn" onclick="dashboard.togglePrinterDisabled(${printer.id})" title="${printer.disabled ? 'Enable' : 'Disable'}">${printer.disabled ? '⏻' : '⏸'}</button>
+                <button class="icon-btn" onclick="dashboard.editPrinter(${printer.id})" title="Edit">✏️</button>
+                <button class="icon-btn danger" onclick="dashboard.removePrinter(${printer.id})" title="Remove">×</button>
+            </div>
             <div class="printer-header">
-                <div class="printer-name">${printer.name} <span class="printer-ip">(${printer.ip.replace(/^https?:\/\//, '')})</span></div>
-                <div class="printer-status">
-                    <span class="status-indicator ${printer.disabled ? 'status-disabled' : 'status-offline'}" id="status-${printer.id}"></span>
-                    <span id="status-text-${printer.id}">${printer.disabled ? 'Disabled' : 'Offline'}</span>
+                <div class="printer-id">
+                    <div class="printer-name">${printer.name}</div>
+                    <div class="printer-ip">${ip}</div>
+                </div>
+                <span class="badge status-disabled" id="badge-${printer.id}">
+                    <span class="dot"></span><span id="status-text-${printer.id}">Offline</span>
+                </span>
+            </div>
+            <div class="progress-section">
+                <div class="progress-top">
+                    <span class="progress-file" id="file-${printer.id}">—</span>
+                    <span class="progress-pct" id="progress-${printer.id}">—</span>
+                </div>
+                <div class="progress-bar">
+                    <div class="progress-fill" id="progress-bar-${printer.id}" style="width: 0%"></div>
                 </div>
             </div>
             <div class="printer-info">
                 <div class="info-item">
-                    <div class="info-label">Current File</div>
-                    <div class="info-value" id="file-${printer.id}">-</div>
+                    <div class="info-label">🛏️ Bed</div>
+                    <div class="info-value" id="bed-temp-${printer.id}">—</div>
                 </div>
                 <div class="info-item">
-                    <div class="info-label">Progress</div>
-                    <div class="info-value" id="progress-${printer.id}">-</div>
-                    <div class="progress-bar">
-                        <div class="progress-fill" id="progress-bar-${printer.id}" style="width: 0%"></div>
-                    </div>
+                    <div class="info-label">🔥 Nozzle</div>
+                    <div class="info-value" id="extruder-temp-${printer.id}">—</div>
                 </div>
                 <div class="info-item">
-                    <div class="info-label">Bed Temperature</div>
-                    <div class="info-value" id="bed-temp-${printer.id}">-</div>
+                    <div class="info-label">⏱️ Elapsed</div>
+                    <div class="info-value" id="print-time-${printer.id}">—</div>
                 </div>
                 <div class="info-item">
-                    <div class="info-label">Extruder Temperature</div>
-                    <div class="info-value" id="extruder-temp-${printer.id}">-</div>
-                </div>
-                <div class="info-item">
-                    <div class="info-label">Print Time</div>
-                    <div class="info-value" id="print-time-${printer.id}">-</div>
-                </div>
-                <div class="info-item">
-                    <div class="info-label">ETA</div>
-                    <div class="info-value" id="eta-${printer.id}">-</div>
+                    <div class="info-label">🏁 ETA</div>
+                    <div class="info-value" id="eta-${printer.id}">—</div>
                 </div>
             </div>
             <div class="webcam-container">
-                <img class="webcam-stream" src="${this.getWebcamUrl(printer.ip)}" alt="Webcam feed" 
+                <img class="webcam-stream" src="${webcamUrl}" alt="${printer.name} webcam" loading="lazy"
                      onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
-                <div class="webcam-error" style="display: none;">
-                    Webcam unavailable
-                </div>
+                <div class="webcam-error" style="display: none;">Webcam unavailable</div>
             </div>
         `;
         if (printer.disabled) {
             card.classList.add('disabled');
         }
+        // Seed initial state (disabled or offline) so overview/order are correct on first paint
+        this.setPrinterState(printer, printer.disabled ? 'disabled' : 'offline', card);
         return card;
+    }
+
+    // Central place to reflect a printer's state in the UI: badge, card accent,
+    // live ordering (via CSS order, so webcam <img> is never reloaded), and overview.
+    setPrinterState(printer, state, cardEl) {
+        const prev = this.printerStates.get(printer.id) || {};
+        const progress = typeof prev.progress === 'number' ? prev.progress : 0;
+        this.printerStates.set(printer.id, { state, progress });
+
+        const card = cardEl || document.getElementById(`card-${printer.id}`);
+        if (card) {
+            card.classList.remove('state-printing', 'state-ready', 'state-offline', 'state-complete', 'state-paused');
+            const cardState = { printing: 'printing', paused: 'paused', ready: 'ready', complete: 'complete', offline: 'offline' }[state];
+            if (cardState) card.classList.add(`state-${cardState}`);
+            card.classList.toggle('disabled', state === 'disabled');
+
+            const order = { printing: 0, paused: 1, complete: 2, ready: 3, offline: 4, disabled: 5 }[state] ?? 4;
+            card.style.order = String(order);
+        }
+
+        const badge = document.getElementById(`badge-${printer.id}`);
+        const text = document.getElementById(`status-text-${printer.id}`);
+        if (badge) {
+            const badgeClass = { printing: 'printing', paused: 'printing', ready: 'online', complete: 'complete', offline: 'offline', disabled: 'disabled' }[state] || 'offline';
+            badge.className = `badge status-${badgeClass}`;
+        }
+        if (text) {
+            text.textContent = { printing: 'Printing', paused: 'Paused', ready: 'Ready', complete: 'Complete', offline: 'Offline', disabled: 'Disabled' }[state] || 'Offline';
+        }
+
+        this.applyCardVisibility(printer.id);
+        this.updateOverview();
+    }
+
+    setPrinterProgress(printerId, progress) {
+        const st = this.printerStates.get(printerId);
+        if (st) { st.progress = progress; this.printerStates.set(printerId, st); }
+    }
+
+    updateOverview() {
+        let printing = 0, ready = 0, complete = 0, offline = 0;
+        this.printerStates.forEach(({ state }) => {
+            const b = this.filterBucket(state);
+            if (b === 'printing') printing++;
+            else if (b === 'ready') ready++;
+            else if (b === 'complete') complete++;
+            else if (b === 'offline') offline++;
+        });
+        const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = String(v); };
+        set('ov-printing', printing);
+        set('ov-ready', ready);
+        set('ov-complete', complete);
+        set('ov-offline', offline);
+        set('ov-total', this.printers.length);
+    }
+
+    updateEmptyState() {
+        const empty = document.getElementById('emptyState');
+        const grid = document.getElementById('printerGrid');
+        if (!empty || !grid) return;
+        const none = this.printers.length === 0;
+        if (none) empty.removeAttribute('hidden'); else empty.setAttribute('hidden', '');
+        grid.style.display = none ? 'none' : '';
     }
 
     connectWebSocket(printer) {
@@ -635,6 +807,7 @@ class KlipperDashboard {
             // Use virtual_sdcard.progress for more accurate progress calculation
             if (virtualSdcard && virtualSdcard.progress !== undefined) {
                 const progress = virtualSdcard.progress;
+              this.setPrinterProgress(printer.id, progress);
               document.getElementById(`progress-${printer.id}`).textContent =
                 `${Math.round(progress * 100)}%`;
               document.getElementById(`progress-bar-${printer.id}`).style.width =
@@ -673,46 +846,27 @@ class KlipperDashboard {
                 `${Math.round(extruder.temperature)}°C / ${Math.round(extruder.target)}°C`;
         }
         
-        // Update status indicator and text
-        const statusIndicator = document.getElementById(`status-${printer.id}`);
-        const statusText = document.getElementById(`status-text-${printer.id}`);
-        
-        if (statusIndicator && statusText) {
-            switch (currentState) {
-                case 'printing':
-                    statusIndicator.className = 'status-indicator status-printing';
-                    statusText.textContent = 'Printing';
-                    break;
-                case 'complete':
-                    statusIndicator.className = 'status-indicator status-complete';
-                    statusText.textContent = 'Complete';
-                    this.checkForPrintCompletion(printer, currentState);
-                    break;
-                case 'paused':
-                    statusIndicator.className = 'status-indicator status-printing';
-                    statusText.textContent = 'Paused';
-                    break;
-                default:
-                    statusIndicator.className = 'status-indicator status-online';
-                    statusText.textContent = 'Ready';
-            }
+        // Map Klipper print_stats.state -> our UI state and reflect it everywhere
+        let uiState;
+        switch (currentState) {
+            case 'printing': uiState = 'printing'; break;
+            case 'paused':   uiState = 'paused'; break;
+            case 'complete':
+                uiState = 'complete';
+                this.checkForPrintCompletion(printer, currentState);
+                break;
+            default:         uiState = 'ready';
+        }
+        // Don't override a user-disabled card with live data
+        if (!printer.disabled) {
+            this.setPrinterState(printer, uiState);
         }
     }
 
     updatePrinterOfflineStatus(printer) {
-        const statusIndicator = document.getElementById(`status-${printer.id}`);
-        const statusText = document.getElementById(`status-text-${printer.id}`);
-        
-        if (statusIndicator && statusText) {
-            if (printer.disabled) {
-                statusIndicator.className = 'status-indicator status-disabled';
-                statusText.textContent = 'Disabled';
-            } else {
-                statusIndicator.className = 'status-indicator status-offline';
-                statusText.textContent = 'Offline';
-            }
-            this.clearPrinterInfo(printer.id);
-        }
+        this.setPrinterState(printer, printer.disabled ? 'disabled' : 'offline');
+        this.setPrinterProgress(printer.id, 0);
+        this.clearPrinterInfo(printer.id);
     }
 
     async fetchPrinterStatus(printer) {
@@ -748,10 +902,6 @@ class KlipperDashboard {
         // For disabled printers, just update the UI status
         if (printer.disabled) {
             this.updatePrinterOfflineStatus(printer);
-            const card = document.getElementById(`status-${printer.id}`)?.closest('.printer-card');
-            if (card) {
-                card.classList.add('disabled');
-            }
             return;
         }
         

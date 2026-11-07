@@ -1,67 +1,123 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>3D Printer Control Center</title>
+    <meta name="theme-color" content="#0f1115">
     <link rel="stylesheet" href="styles.css">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><text y='18' font-size='18'>🖨️</text></svg>">
 </head>
 <body>
-    <div class="container">
-        <header>
-            <h1>3D Printer Control Center</h1>
-            <div class="controls">
-                <button id="addPrinter">Add Printer</button>
-                <button id="enableNotifications" class="notification-btn">Enable Notifications</button>
-                <button id="testNotification">Test Notification</button>
-                <div class="settings">
-                    <label for="pollInterval">Poll Interval (seconds):</label>
-                    <input type="number" id="pollInterval" value="1" min="1" max="60">
-                    <button id="saveSettings">Save</button>
-                </div>
+    <div class="app">
+        <header class="topbar">
+            <div class="brand">
+                <span class="brand-logo" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M6 9V3h12v6"/><rect x="4" y="9" width="16" height="7" rx="1.5"/><path d="M7 16v5h10v-5"/><circle cx="17" cy="12.5" r="1" fill="currentColor" stroke="none"/>
+                    </svg>
+                </span>
+                <h1>3D Printer Control Center</h1>
+            </div>
+
+            <div class="overview" id="overview" role="group" aria-label="Fleet overview">
+                <button class="stat is-printing" data-filter="printing" title="Filter: printing">
+                    <span class="stat-num" id="ov-printing">0</span><span class="stat-label">Printing</span>
+                </button>
+                <button class="stat is-ready" data-filter="ready" title="Filter: ready">
+                    <span class="stat-num" id="ov-ready">0</span><span class="stat-label">Ready</span>
+                </button>
+                <button class="stat is-complete" data-filter="complete" title="Filter: complete">
+                    <span class="stat-num" id="ov-complete">0</span><span class="stat-label">Done</span>
+                </button>
+                <button class="stat is-offline" data-filter="offline" title="Filter: offline">
+                    <span class="stat-num" id="ov-offline">0</span><span class="stat-label">Offline</span>
+                </button>
+                <button class="stat is-total" data-filter="all" title="Show all">
+                    <span class="stat-num" id="ov-total">0</span><span class="stat-label">Total</span>
+                </button>
+            </div>
+
+            <div class="toolbar">
+                <button id="addPrinter" class="btn btn-primary" title="Add printer">
+                    <span class="btn-ico">＋</span><span class="btn-txt">Add</span>
+                </button>
+                <button id="toggleWebcams" class="btn btn-ghost" title="Show / hide webcams" aria-pressed="true">
+                    <span class="btn-ico">📷</span>
+                </button>
+                <button id="enableNotifications" class="btn btn-ghost notification-btn" title="Enable notifications">
+                    <span class="btn-ico">🔔</span>
+                </button>
+                <button id="settingsBtn" class="btn btn-ghost" title="Settings" aria-expanded="false">
+                    <span class="btn-ico">⚙️</span>
+                </button>
+                <button id="themeToggle" class="btn btn-ghost" title="Toggle theme" aria-label="Toggle theme">
+                    <span class="theme-ico-dark">🌙</span><span class="theme-ico-light">☀️</span>
+                </button>
             </div>
         </header>
 
-        <main>
-            <div id="printerGrid" class="printer-grid">
-                <!-- Printer cards will be dynamically added here -->
+        <div id="settingsPanel" class="settings-panel" hidden>
+            <div class="settings-row">
+                <label for="pollInterval">Poll interval</label>
+                <div class="field">
+                    <input type="number" id="pollInterval" value="1" min="1" max="60">
+                    <span class="unit">sec</span>
+                </div>
+                <button id="saveSettings" class="btn btn-small">Save</button>
             </div>
-        </main>
-
-        <div id="addPrinterModal" class="modal">
-            <div class="modal-content">
-                <span class="close">&times;</span>
-                <h2>Add New Printer</h2>
-                <form id="addPrinterForm">
-                    <div class="form-group">
-                        <label for="printerName">Printer Name:</label>
-                        <input type="text" id="printerName" required>
-                    </div>
-                    <div class="form-group">
-                        <label for="printerIP">Printer IP:</label>
-                        <input type="text" id="printerIP" placeholder="10.0.68.108" required>
-                    </div>
-                    <button type="submit">Add Printer</button>
-                </form>
+            <div class="settings-row">
+                <span class="settings-label">Notifications</span>
+                <button id="testNotification" class="btn btn-small btn-ghost">Send test</button>
             </div>
         </div>
 
-        <div id="editPrinterModal" class="modal">
-            <div class="modal-content">
-                <span class="close">&times;</span>
-                <h2>Edit Printer</h2>
-                <form id="editPrinterForm">
-                    <div class="form-group">
-                        <label for="editPrinterName">Printer Name:</label>
-                        <input type="text" id="editPrinterName" required>
-                    </div>
-                    <div class="form-group">
-                        <label for="editPrinterIP">Printer IP:</label>
-                        <input type="text" id="editPrinterIP" placeholder="10.0.68.108" required>
-                    </div>
-                    <button type="submit">Save Changes</button>
-                </form>
+        <main>
+            <div id="emptyState" class="empty-state" hidden>
+                <div class="empty-ico">🖨️</div>
+                <p>No printers yet. Click <strong>Add</strong> to get started.</p>
             </div>
+            <div id="printerGrid" class="printer-grid">
+                <!-- Printer cards are rendered here -->
+            </div>
+        </main>
+    </div>
+
+    <!-- Add printer modal -->
+    <div id="addPrinterModal" class="modal">
+        <div class="modal-content">
+            <button class="close" aria-label="Close">&times;</button>
+            <h2>Add Printer</h2>
+            <form id="addPrinterForm">
+                <div class="form-group">
+                    <label for="printerName">Name</label>
+                    <input type="text" id="printerName" placeholder="e.g. K2 Plus" required>
+                </div>
+                <div class="form-group">
+                    <label for="printerIP">IP address</label>
+                    <input type="text" id="printerIP" placeholder="10.0.68.21" required>
+                </div>
+                <button type="submit" class="btn btn-primary btn-block">Add Printer</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Edit printer modal -->
+    <div id="editPrinterModal" class="modal">
+        <div class="modal-content">
+            <button class="close" aria-label="Close">&times;</button>
+            <h2>Edit Printer</h2>
+            <form id="editPrinterForm">
+                <div class="form-group">
+                    <label for="editPrinterName">Name</label>
+                    <input type="text" id="editPrinterName" required>
+                </div>
+                <div class="form-group">
+                    <label for="editPrinterIP">IP address</label>
+                    <input type="text" id="editPrinterIP" placeholder="10.0.68.21" required>
+                </div>
+                <button type="submit" class="btn btn-primary btn-block">Save Changes</button>
+            </form>
         </div>
     </div>
 

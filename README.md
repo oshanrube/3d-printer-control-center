@@ -1,223 +1,89 @@
-# Klipper Printer Dashboard
+# 3D Printer Control Center
 
-A web-based dashboard for monitoring multiple Klipper 3D printers with real-time status updates, webcam feeds, and desktop notifications.
+A fast, modern web dashboard for monitoring multiple Klipper / Moonraker 3D printers
+at a glance — live status, temperatures, print progress, webcam feeds, and desktop
+notifications. Pure HTML/CSS/JS served by Caddy; **no build step**.
 
 ## Features
 
-- **Multi-printer monitoring**: Monitor multiple Klipper printers simultaneously
-- **Real-time status updates**: Configurable polling interval (default: 1 second)
-- **Print progress tracking**: Visual progress bars and ETA calculations
-- **Temperature monitoring**: Bed and extruder temperature display
-- **Webcam integration**: Live webcam feeds for each printer
-- **Desktop notifications**: Automatic notifications when prints complete
-- **Responsive design**: Works on desktop and mobile devices
-- **Configurable printers**: Add/remove printers dynamically
-- **Persistent settings**: Settings saved in browser localStorage
-- **CORS-free operation**: Uses Caddy proxy to avoid cross-origin issues
+- **Fleet overview header** — live counts of Printing / Ready / Done / Offline, click a tile to filter
+- **At-a-glance cards** — status badge, bold progress bar, bed/nozzle temps, elapsed + ETA
+- **Live reordering** — printing jobs float to the top automatically (webcams never reload)
+- **Dark & light themes** — toggle in the header, remembers your choice, follows system default
+- **Responsive** — works well on a phone for checking prints remotely
+- **Webcam feeds** — per-printer MJPEG streams (toggle on/off)
+- **Desktop notifications** — alerts when a print completes
+- **Real-time** — direct Moonraker WebSocket subscriptions (no polling lag)
+- **CORS-free proxy** — Caddy reverse-proxies printer APIs to avoid cross-origin issues
+- **Persistent** — printers and settings saved in browser localStorage
 
-## Quick Start (Docker - Recommended)
-
-1. Clone or download this repository
-2. Make sure Docker and Docker Compose are installed
-3. Run the following commands:
-   ```bash
-   docker-compose up -d
-   ```
-4. Open your browser and navigate to `http://localhost:8080`
-5. The dashboard will automatically load with three default printers:
-   - Printer 1: `10.0.68.108:4408`
-   - Printer 2: `10.0.68.121:4408`
-   - Printer 3: `10.0.68.130:4408`
-
-## Alternative Setup (Direct HTML)
-
-1. Download or clone this repository
-2. Open `index.html` in a modern web browser
-3. **Note**: This method may encounter CORS errors. Use the Docker setup for best results.
-
-## Setup Instructions
-
-### Prerequisites
-
-- Klipper 3D printers with Moonraker API enabled
-- Modern web browser (Chrome, Firefox, Safari, Edge)
-- Network access to your Klipper printers
-
-### Configuration
-
-1. **Default Printers**: The dashboard comes pre-configured with the printers from your setup. You can modify or remove these as needed.
-
-2. **Adding New Printers**:
-   - Click the "Add Printer" button
-   - Enter printer name and IP address (e.g., `10.0.68.108:4408`)
-   - Optionally add webcam URL (e.g., `http://10.0.68.108:8080/stream`)
-   - Click "Add Printer"
-
-3. **Configuring Poll Interval**:
-   - Adjust the "Poll Interval" setting in the header
-   - Range: 1-60 seconds (default: 1 second)
-   - Click "Save" to apply changes
-
-4. **Webcam Setup**:
-   - Ensure your printer's webcam is accessible via HTTP
-   - Common webcam URLs:
-     - `http://[PRINTER_IP]:4408/webcam/?action=stream` (Klipper/Moonraker built-in)
-     - `http://[PRINTER_IP]:8080/stream` (mjpg-streamer)
-     - `http://[PRINTER_IP]:8080/?action=stream` (mjpg-streamer alternative)
-
-## Browser Compatibility
-
-- **Chrome/Chromium**: Full support including notifications
-- **Firefox**: Full support including notifications
-- **Safari**: Full support including notifications
-- **Edge**: Full support including notifications
-
-## API Endpoints Used
-
-The dashboard communicates with Klipper via the Moonraker API:
-
-- `/server/info` - Basic server and printer information
-- `/printer/objects/query?print_stats&heater_bed&extruder&display_status` - Print status and temperatures
-
-## Status Indicators
-
-- **Green (pulsing)**: Printer online and ready
-- **Orange (pulsing)**: Currently printing or paused
-- **Purple (glowing)**: Print completed
-- **Red**: Printer offline
-
-## Notifications
-
-The dashboard will request notification permission on first load. When granted:
-
-- Desktop notifications appear when prints complete
-- Notifications include printer name and completion message
-- Fallback browser alerts are shown if notifications are disabled
-
-## Docker Deployment
-
-### Building and Running
-
-The recommended way to run this dashboard is using Docker to avoid CORS issues:
+## Quick Start (Docker)
 
 ```bash
-# Build and start the container
-docker-compose up -d
-
-# View logs
-docker-compose logs -f
-
-# Stop the container
-docker-compose down
-
-# Rebuild after changes
-docker-compose up -d --build
+docker compose up -d --build
 ```
 
-### Docker Configuration
+Then open **http://<host>:8081**.
 
-The application runs on port 8080 by default. You can modify this in `docker-compose.yml`:
+Default seeded printers (edit/remove in the UI, or edit `initializeDefaultPrinters()` in `script.js`):
 
-```yaml
-ports:
-  - "3000:80"  # Change 8080 to your preferred port
-```
+| Name            | IP            |
+|-----------------|---------------|
+| Mokey D. Luffy  | 10.0.68.108   |
+| Roronoa Zoro    | 10.0.68.130   |
+| Nami            | 10.0.68.121   |
+| Usopp           | 10.0.68.116   |
+| Sanji           | 10.0.68.124   |
+| K2 Plus         | 10.0.68.21    |
 
-### Docker Troubleshooting
+> Printers live in browser localStorage. On an install that already had a saved list,
+> a one-time `ensureK2Plus()` migration injects the K2 Plus if it's missing (guarded by a
+> flag, so it won't return if you deliberately remove it).
 
-- **Container won't start**: Check Docker logs with `docker-compose logs`
-- **Port already in use**: Change the port mapping in `docker-compose.yml`
-- **Can't reach printers**: Ensure your Docker host can reach the printer IPs
-- **Permission issues**: Try running with `sudo` on Linux systems
+## How it connects to printers
 
-## CORS Considerations (Alternative Setup)
+- **Status**: the browser opens `ws://<printer-ip>:7125/websocket` and subscribes to
+  `print_stats`, `heater_bed`, `extruder`, `display_status`, and `virtual_sdcard`.
+- **Webcam**: `http://<printer-ip>:4408/webcam/?action=stream` (Creality K-series default;
+  shows "Webcam unavailable" gracefully if the camera is off).
+- **Proxy** (optional, CORS): `GET /api/proxy/<ip>:<port>/<endpoint>` is reverse-proxied by Caddy.
 
-If you're not using Docker and encounter CORS errors:
-
-1. **Moonraker Configuration**: Add the following to your `moonraker.conf`:
-   ```
-   [authorization]
-   cors_domains:
-       *
-   ```
-
-2. **Browser Security**: For local development:
-   - Don't open HTML files directly (file:// protocol)
-   - Use a local HTTP server instead
-   - **Recommended**: Use the Docker setup above
-
-## Troubleshooting
-
-### Printers Show as Offline
-
-1. Check network connectivity to printer IP addresses
-2. Verify Klipper/Moonraker is running on the printer
-3. Ensure port 4408 is accessible (default Moonraker port)
-4. Check browser console for CORS or network errors
-
-### Webcam Not Loading
-
-1. Verify webcam URL is correct and accessible
-2. Check if webcam service is running on the printer
-3. Ensure webcam is accessible via HTTP (not HTTPS only)
-4. Try accessing webcam URL directly in browser
-
-### Notifications Not Working
-
-1. Check if browser notifications are allowed for the site
-2. Try refreshing the page to re-request permission
-3. Check browser notification settings
-
-### Performance Issues
-
-1. Increase poll interval to reduce server load
-2. Disable webcam feeds for printers where not needed
-3. Close browser tabs when not actively monitoring
-
-## Development
-
-### File Structure
+Each printer needs Moonraker reachable on the LAN. If you hit CORS issues when not using the
+Docker/Caddy setup, add to `moonraker.conf`:
 
 ```
-├── index.html      # Main HTML structure
-├── styles.css      # CSS styling and responsive design
-├── script.js       # JavaScript functionality
-└── README.md       # This documentation
+[authorization]
+cors_domains:
+    *
 ```
 
-### Key Components
+## Configuration
 
-- **KlipperDashboard Class**: Main application logic
-- **Printer Management**: Add/remove/configure printers
-- **Status Polling**: Configurable interval API polling
-- **Notification System**: Desktop notification handling
-- **Responsive UI**: Mobile-friendly interface
+- **Add / edit / remove / disable** printers from the UI.
+- **Poll interval** and **test notification** live in the ⚙️ settings panel.
+- **Theme** (🌙/☀️) and **webcam visibility** (📷) toggles are in the header.
 
-## Android App Consideration
+## Docker
 
-While this web application works well on mobile browsers, you mentioned considering an Android app. The current web solution offers several advantages:
+```bash
+docker compose up -d --build   # build + start
+docker compose logs -f         # logs
+docker compose down            # stop
+```
 
-- **Cross-platform**: Works on any device with a web browser
-- **No installation**: Direct access via browser
-- **Easy updates**: Changes deployed instantly
-- **Lower maintenance**: Single codebase for all platforms
+Change the published port in `docker-compose.yml` (`"8081:80"`).
 
-However, a native Android app could provide:
-- Better background processing
-- More robust notification handling
-- Offline capabilities
-- Better system integration
+## File structure
 
-The web dashboard can serve as a solid foundation and prototype for a future Android application.
+```
+├── index.html      # Markup: topbar, overview, grid, modals
+├── styles.css      # Design tokens + dark/light themes + responsive layout
+├── script.js       # KlipperDashboard class: WS, state, overview, theming
+├── Caddyfile       # Static file server + CORS + printer proxy
+├── Dockerfile      # caddy:2.7-alpine
+└── docker-compose.yml
+```
 
 ## License
 
-This project is open source and available under the MIT License.
-
-## Support
-
-For issues or questions:
-1. Check the troubleshooting section above
-2. Verify your Klipper/Moonraker setup
-3. Check browser console for error messages
-4. Ensure network connectivity to all printers
+MIT.
