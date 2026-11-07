@@ -11,6 +11,7 @@ notifications. Pure HTML/CSS/JS served by Caddy; **no build step**.
 - **Live reordering** — printing jobs float to the top automatically
 - **Dark & light themes** — toggle in the header, remembers your choice, follows system default
 - **Responsive** — works well on a phone for checking prints remotely
+- **Live cameras** — in-browser WebRTC feed per printer (Creality libpeer), to catch failed prints
 - **Desktop notifications** — alerts when a print completes
 - **Real-time** — direct Moonraker WebSocket subscriptions (no polling lag)
 - **CORS-free proxy** — Caddy reverse-proxies printer APIs to avoid cross-origin issues
@@ -43,7 +44,14 @@ Default seeded printers (edit/remove in the UI, or edit `initializeDefaultPrinte
 
 - **Status**: the browser opens `ws://<printer-ip>:7125/websocket` and subscribes to
   `print_stats`, `heater_bed`, `extruder`, `display_status`, and `virtual_sdcard`.
-- No webcam/camera feeds (intentionally omitted; the dashboard focuses on status at a glance).
+- **Live camera (Creality WebRTC)** — plays each printer's camera in-browser for spotting failed prints.
+  Creality K-series printers (K2 Plus, K1C, …) serve the camera via an embedded WebRTC stack
+  (`libpeer`) on port 8000, signaled at `POST /call/webrtc_local`. The dashboard performs that
+  handshake (H.264-only offer, non-trickle, answer payload-types reconciled to what the browser
+  offered), routed through the Caddy proxy (same-origin); media connects peer-to-peer on the LAN.
+  A camera starts only once its printer's Moonraker WebSocket is connected. Toggle with the 📷 button.
+  Note: the printer's camera service serves **one viewer at a time**, so a feed may be blank if the
+  Creality app or another browser tab is already watching that printer.
 - **Proxy** (optional, CORS): `GET /api/proxy/<ip>:<port>/<endpoint>` is reverse-proxied by Caddy.
 
 Each printer needs Moonraker reachable on the LAN. If you hit CORS issues when not using the
