@@ -9,6 +9,7 @@ class KlipperDashboard {
         this.reconnectTimers = new Map(); // Store reconnection timers
         this.printerCache = new Map(); // Cache printer data to merge updates
         this.printerStates = new Map(); // id -> { state, progress } for fleet overview + ordering
+        this.webrtcPeers = new Map(); // id -> RTCPeerConnection (Creality WebRTC cameras)
         this.currentFilter = 'all';
         this.showWebcams = (localStorage.getItem('showWebcams') ?? '1') === '1';
         this.theme = localStorage.getItem('theme') ||
@@ -67,7 +68,7 @@ class KlipperDashboard {
                 { id: 3, name: 'Nami', ip: '10.0.68.121', disabled: false },
                 { id: 4, name: 'Usopp', ip: '10.0.68.116', disabled: false },
                 { id: 5, name: 'Sanji', ip: '10.0.68.124', disabled: false },
-                { id: 6, name: 'K2 Plus', ip: '10.0.68.21', disabled: false }
+                { id: 6, name: 'K2 Plus', ip: '10.0.68.21', disabled: false, cameraType: 'creality-webrtc' }
             ];
             this.printers = defaultPrinters;
             this.savePrinters();
@@ -84,7 +85,7 @@ class KlipperDashboard {
             const exists = Array.isArray(this.printers) &&
                 this.printers.some(p => this.getHostFromIp(p.ip) === K2_IP);
             if (!exists) {
-                this.printers.push({ id: Date.now(), name: 'K2 Plus', ip: K2_IP, disabled: false });
+                this.printers.push({ id: Date.now(), name: 'K2 Plus', ip: K2_IP, disabled: false, cameraType: 'creality-webrtc' });
                 this.savePrinters();
             }
             localStorage.setItem('migrated_k2plus', '1');
@@ -125,6 +126,123 @@ class KlipperDashboard {
         document.body.classList.toggle('hide-webcams', !this.showWebcams);
         const wc = document.getElementById('toggleWebcams');
         if (wc) wc.setAttribute('aria-pressed', String(this.showWebcams));
+        // WebRTC cameras consume bandwidth/CPU, so start/stop them with visibility
+        if (this.showWebcams) this.startAllWebrtc();
+        else this.stopAllWebrtc();
+    }
+
+    getWebrtcEndpoint(printer) {
+        const host = this.getHostFromIp(printer.ip);
+        const port = printer.webrtcPort || 8000;
+        const path = (printer.webrtcPath || '/call/webrtc_local').replace(/^\//, '');
+        // Route SDP signaling through the dashboard's Caddy proxy (same-origin, no CORS
+        // preflight). WebRTC media still connects peer-to-peer over the LAN.
+        return `/api/proxy/${host}:${port}/${path}`;
+    }
+
+    // Replicates the K2's own browser signaling: offer -> POST (base64 JSON) -> answer.
+    // Pure WebRTC peer on the LAN; makes no changes to the printer.
+    async startWebrtcCamera(printer) {
+        if (printer.disabled || !this.showWebcams) return;
+        if (this.webrtcPeers.has(printer.id)) return; // already connecting/connected
+        const video = document.getElementById(`cam-${printer.id}`);
+        if (!video) return;
+        const errEl = video.parentElement ? video.parentElement.querySelector('.webcam-error') : null;
+        const showError = () => { if (errEl) errEl.style.display = 'flex'; video.style.display = 'none'; };
+        const clearError = () => { if (errEl) errEl.style.display = 'none'; video.style.display = ''; };
+
+        let pc;
+        try {
+            pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+        } catch (e) {
+            console.warn('WebRTC unsupported:', e); showError(); return;
+        }
+        this.webrtcPeers.set(printer.id, pc);
+
+        // Fail-safe: if no video track arrives, show the fallback and tear down
+        const watchdog = setTimeout(() => {
+            if (pc.connectionState !== 'connected' && (!video.srcObject)) {
+                console.warn(`WebRTC camera timeout for ${printer.name}`);
+                showError();
+                this.stopWebrtcCamera(printer.id);
+            }
+        }, 12000);
+
+        pc.ontrack = (event) => {
+            clearError();
+            video.srcObject = event.streams[0];
+            clearTimeout(watchdog);
+        };
+        pc.onconnectionstatechange = () => {
+            if (['failed', 'closed', 'disconnected'].includes(pc.connectionState)) {
+                showError();
+            }
+        };
+        pc.onicecandidate = (event) => {
+            // Non-trickle: send the offer once gathering completes
+            if (event.candidate === null) this.sendWebrtcOffer(printer, pc, showError, watchdog);
+        };
+
+        try {
+            pc.addTransceiver('video', { direction: 'sendrecv' });
+            const offer = await pc.createOffer();
+            await pc.setLocalDescription(offer);
+            // Some browsers fire the null candidate only via the event; as a fallback,
+            // also send after a short gather window if state is already complete.
+            setTimeout(() => {
+                if (pc.iceGatheringState === 'complete' && !pc._offerSent) {
+                    this.sendWebrtcOffer(printer, pc, showError, watchdog);
+                }
+            }, 1500);
+        } catch (e) {
+            console.warn(`WebRTC offer failed for ${printer.name}:`, e);
+            showError();
+            this.stopWebrtcCamera(printer.id);
+        }
+    }
+
+    async sendWebrtcOffer(printer, pc, showError, watchdog) {
+        if (pc._offerSent) return; // guard against double-send
+        pc._offerSent = true;
+        try {
+            const body = btoa(JSON.stringify({ type: 'offer', sdp: pc.localDescription.sdp }));
+            const resp = await fetch(this.getWebrtcEndpoint(printer), {
+                method: 'POST',
+                headers: { 'Content-Type': 'plain/text' },
+                body
+            });
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+            const text = await resp.text();
+            const answer = JSON.parse(atob(text));
+            if (answer.type === 'answer') {
+                await pc.setRemoteDescription(new RTCSessionDescription(answer));
+            } else {
+                throw new Error('no answer in response');
+            }
+        } catch (e) {
+            console.warn(`WebRTC signaling failed for ${printer.name}:`, e);
+            if (showError) showError();
+            if (watchdog) clearTimeout(watchdog);
+            this.stopWebrtcCamera(printer.id);
+        }
+    }
+
+    stopWebrtcCamera(id) {
+        const pc = this.webrtcPeers.get(id);
+        if (pc) { try { pc.close(); } catch (_) {} }
+        this.webrtcPeers.delete(id);
+        const video = document.getElementById(`cam-${id}`);
+        if (video) { try { video.srcObject = null; } catch (_) {} }
+    }
+
+    startAllWebrtc() {
+        this.printers.forEach(p => {
+            if (p.cameraType === 'creality-webrtc' && !p.disabled) this.startWebrtcCamera(p);
+        });
+    }
+
+    stopAllWebrtc() {
+        Array.from(this.webrtcPeers.keys()).forEach(id => this.stopWebrtcCamera(id));
     }
 
     setupEventListeners() {
@@ -448,6 +566,7 @@ class KlipperDashboard {
             this.websockets.delete(id);
             const timer = this.reconnectTimers.get(id);
             if (timer) { clearTimeout(timer); this.reconnectTimers.delete(id); }
+            this.stopWebrtcCamera(id);
             this.printerStates.delete(id);
 
             this.printers = this.printers.filter(printer => printer.id !== id);
@@ -501,6 +620,7 @@ class KlipperDashboard {
 
     renderPrinters() {
         const grid = document.getElementById('printerGrid');
+        this.stopAllWebrtc(); // tear down old peers before DOM is rebuilt
         grid.innerHTML = '';
         this.printerStates.clear();
 
@@ -514,6 +634,8 @@ class KlipperDashboard {
 
         // Fetch initial status for all printers
         this.updateAllPrinterStatus();
+        // Start WebRTC cameras (cards are now in the DOM)
+        this.startAllWebrtc();
     }
 
     createPrinterCard(printer) {
@@ -522,6 +644,13 @@ class KlipperDashboard {
         card.id = `card-${printer.id}`;
         const ip = this.getHostFromIp(printer.ip);
         const webcamUrl = printer.webcamUrl || this.getWebcamUrl(printer.ip);
+        const isWebrtc = printer.cameraType === 'creality-webrtc';
+        const webcamInner = isWebrtc
+            ? `<video class="webcam-stream" id="cam-${printer.id}" autoplay playsinline muted></video>
+               <div class="webcam-error" style="display: none;">Webcam unavailable</div>`
+            : `<img class="webcam-stream" src="${webcamUrl}" alt="${printer.name} webcam" loading="lazy"
+                     onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+               <div class="webcam-error" style="display: none;">Webcam unavailable</div>`;
         card.innerHTML = `
             <div class="card-actions">
                 <button class="icon-btn" onclick="dashboard.togglePrinterDisabled(${printer.id})" title="${printer.disabled ? 'Enable' : 'Disable'}">${printer.disabled ? '⏻' : '⏸'}</button>
@@ -565,9 +694,7 @@ class KlipperDashboard {
                 </div>
             </div>
             <div class="webcam-container">
-                <img class="webcam-stream" src="${webcamUrl}" alt="${printer.name} webcam" loading="lazy"
-                     onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
-                <div class="webcam-error" style="display: none;">Webcam unavailable</div>
+                ${webcamInner}
             </div>
         `;
         if (printer.disabled) {
@@ -1001,8 +1128,10 @@ document.addEventListener('visibilitychange', () => {
     if (dashboard) {
         if (document.hidden) {
             dashboard.stopWebSocketConnections();
+            dashboard.stopAllWebrtc();
         } else {
             dashboard.startWebSocketConnections();
+            if (dashboard.showWebcams) dashboard.startAllWebrtc();
         }
     }
 });

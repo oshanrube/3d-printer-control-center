@@ -1,2 +1,5 @@
 /logs/access-2025-08-25T09-21-11.489.log.gz
 /logs/access.log
+
+# harness / tooling
+.claude/

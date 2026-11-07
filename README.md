@@ -44,8 +44,14 @@ Default seeded printers (edit/remove in the UI, or edit `initializeDefaultPrinte
 
 - **Status**: the browser opens `ws://<printer-ip>:7125/websocket` and subscribes to
   `print_stats`, `heater_bed`, `extruder`, `display_status`, and `virtual_sdcard`.
-- **Webcam**: `http://<printer-ip>:4408/webcam/?action=stream` (Creality K-series default;
-  shows "Webcam unavailable" gracefully if the camera is off).
+- **Webcam (MJPEG)**: `http://<printer-ip>:4408/webcam/?action=stream` (default; shows
+  "Webcam unavailable" gracefully if no stream).
+- **Webcam (Creality WebRTC)**: set a printer's `cameraType: 'creality-webrtc'` (the K2 Plus
+  default). The browser performs the K2's native WebRTC handshake — `POST /call/webrtc_local`
+  on the camera service (port 8000), base64 `{type:'offer',sdp}` → `{type:'answer',sdp}` — and
+  plays the feed in a `<video>`. Signaling is routed through the Caddy proxy (same-origin, no
+  CORS); media connects peer-to-peer on the LAN. Requires no changes to the printer and runs
+  alongside Creality's own camera service.
 - **Proxy** (optional, CORS): `GET /api/proxy/<ip>:<port>/<endpoint>` is reverse-proxied by Caddy.
 
 Each printer needs Moonraker reachable on the LAN. If you hit CORS issues when not using the
