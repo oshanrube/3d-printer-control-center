@@ -24,14 +24,13 @@ class KlipperDashboard {
     initializeDefaultPrinters() {
         if (this.printers.length === 0) {
             // Add default printers from the issue description
-            const C = 'creality-webrtc';
             const defaultPrinters = [
-                { id: 1, name: 'Mokey D. Luffy', ip: '10.0.68.108', disabled: false, cameraType: C },
-                { id: 2, name: 'Roronoa Zoro', ip: '10.0.68.130', disabled: false, cameraType: C },
-                { id: 3, name: 'Nami', ip: '10.0.68.121', disabled: false, cameraType: C },
-                { id: 4, name: 'Usopp', ip: '10.0.68.116', disabled: false, cameraType: C },
-                { id: 5, name: 'Sanji', ip: '10.0.68.124', disabled: false, cameraType: C },
-                { id: 6, name: 'K2 Plus', ip: '10.0.68.21', disabled: false, cameraType: C }
+                { id: 1, name: 'Mokey D. Luffy', ip: '10.0.68.108', disabled: false },
+                { id: 2, name: 'Roronoa Zoro', ip: '10.0.68.130', disabled: false },
+                { id: 3, name: 'Nami', ip: '10.0.68.121', disabled: false },
+                { id: 4, name: 'Usopp', ip: '10.0.68.116', disabled: false },
+                { id: 5, name: 'Sanji', ip: '10.0.68.124', disabled: false },
+                { id: 6, name: 'K2 Plus', ip: '10.0.68.21', disabled: false }
             ];
             this.printers = defaultPrinters;
             this.savePrinters();
@@ -72,8 +71,9 @@ class KlipperDashboard {
     }
 
     cameraTypeOf(printer) {
-        // Default to Creality WebRTC for these printers unless explicitly overridden
-        return printer.cameraType || 'creality-webrtc';
+        // 'auto' tries WebRTC (K2-style libpeer) then falls back to MJPEG (K1C-style).
+        // Can be overridden per printer: 'creality-webrtc' | 'mjpeg' | 'none'.
+        return printer.cameraType || 'auto';
     }
 
     applyTheme() {
@@ -147,63 +147,102 @@ class KlipperDashboard {
         return out.filter(x => x !== '').join('\r\n') + '\r\n';
     }
 
-    async startWebrtcCamera(printer) {
-        if (printer.disabled || !this.showWebcams) return;
-        if (this.cameraTypeOf(printer) !== 'creality-webrtc') return;
-        if (this.webrtcPeers.has(printer.id)) return;
-        const video = document.getElementById(`cam-${printer.id}`);
-        if (!video) return;
-        const errEl = video.parentElement ? video.parentElement.querySelector('.webcam-error') : null;
-        const showError = () => { if (errEl) errEl.style.display = 'flex'; video.style.display = 'none'; };
-        const clearError = () => { if (errEl) errEl.style.display = 'none'; video.style.display = ''; };
-
-        let pc;
-        try {
-            pc = new RTCPeerConnection();
-        } catch (e) { console.warn('WebRTC unsupported:', e); showError(); return; }
-        this.webrtcPeers.set(printer.id, pc);
-
-        const watchdog = setTimeout(() => {
-            if (!video.videoWidth) { showError(); this.stopWebrtcCamera(printer.id); }
-        }, 15000);
-
-        pc.ontrack = (event) => { clearError(); video.srcObject = event.streams[0]; };
-        pc.onconnectionstatechange = () => {
-            if (['failed', 'closed', 'disconnected'].includes(pc.connectionState)) showError();
-            if (pc.connectionState === 'connected') clearTimeout(watchdog);
-        };
-
-        try {
-            const tr = pc.addTransceiver('video', { direction: 'recvonly' });
-            try {
-                const caps = RTCRtpReceiver.getCapabilities('video');
-                const h264 = caps.codecs.filter(c => /H264/i.test(c.mimeType));
-                if (h264.length && tr.setCodecPreferences) tr.setCodecPreferences(h264);
-            } catch (_) {}
-
-            await pc.setLocalDescription(await pc.createOffer());
-            await this.waitForIceGathering(pc); // non-trickle: libpeer wants a complete offer
-            const offer = pc.localDescription.sdp;
-
-            const resp = await fetch(this.getWebrtcEndpoint(printer), {
-                method: 'POST',
-                headers: { 'Content-Type': 'text/plain' },
-                body: btoa(JSON.stringify({ type: 'offer', sdp: offer }))
-            });
-            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-            const ans = JSON.parse(atob(await resp.text()));
-            if (ans.type !== 'answer') throw new Error('no answer');
-            ans.sdp = this.mungeWebrtcAnswer(offer, ans.sdp);
-            await pc.setRemoteDescription(new RTCSessionDescription(ans));
-        } catch (e) {
-            console.warn(`WebRTC camera failed for ${printer.name}:`, e);
-            clearTimeout(watchdog);
-            showError();
-            this.stopWebrtcCamera(printer.id);
-        }
+    mjpegCandidates(printer) {
+        const h = this.getHostFromIp(printer.ip);
+        return [printer.webcamUrl,
+                `http://${h}:4408/webcam/?action=stream`,
+                `http://${h}:8080/?action=stream`].filter(Boolean);
     }
 
-    stopWebrtcCamera(id) {
+    // Orchestrator: start a printer's camera according to its type (default 'auto').
+    // Named startWebrtcCamera for historical call sites; handles MJPEG too.
+    startWebrtcCamera(printer) {
+        if (printer.disabled || !this.showWebcams) return;
+        const type = this.cameraTypeOf(printer);
+        if (type === 'none') return;
+        if (!this._camActive) this._camActive = new Set();
+        if (this._camActive.has(printer.id)) return; // already running
+        const video = document.getElementById(`cam-${printer.id}`);
+        const img = document.getElementById(`cam-img-${printer.id}`);
+        if (!video && !img) return;
+        const container = (video && video.parentElement) || (img && img.parentElement);
+        const err = container ? container.querySelector('.webcam-error') : null;
+        this._camActive.add(printer.id);
+
+        const state = { done: false };
+        const showVideo = () => { state.done = true; if (video) video.style.display = ''; if (img) { img.style.display = 'none'; img.removeAttribute('src'); } if (err) err.style.display = 'none'; };
+        const showImg   = () => { if (state.done) return; state.done = true; if (img) img.style.display = ''; if (video) video.style.display = 'none'; if (err) err.style.display = 'none'; };
+        const showErr   = () => { if (state.done) return; if (err) err.style.display = 'flex'; };
+
+        const tryMjpeg = () => {
+            if (state.done || !img) { showErr(); return; }
+            const urls = this.mjpegCandidates(printer); let i = 0;
+            const next = () => {
+                if (state.done) return;
+                if (i >= urls.length) { showErr(); return; }
+                const u = urls[i++];
+                img.onload = () => { if (!state.done) showImg(); };
+                img.onerror = () => { next(); };
+                img.src = u;
+            };
+            next();
+        };
+
+        if (type === 'mjpeg') { tryMjpeg(); return; }
+        // 'creality-webrtc' or 'auto'
+        this.connectWebrtc(printer, video, showVideo, () => {
+            if (type === 'auto') tryMjpeg(); else showErr();
+        });
+    }
+
+    // Verified against K2 Plus: libpeer on :8000, POST /call/webrtc_local, reconcile PTs.
+    connectWebrtc(printer, video, onSuccess, onFail) {
+        if (!video) { onFail && onFail(); return; }
+        if (this.webrtcPeers.has(printer.id)) return;
+        let pc;
+        try { pc = new RTCPeerConnection(); } catch (e) { onFail && onFail(); return; }
+        this.webrtcPeers.set(printer.id, pc);
+
+        let settled = false;
+        const finish = (ok) => {
+            if (settled) return; settled = true; clearTimeout(watchdog);
+            if (ok) onSuccess && onSuccess();
+            else { this.stopWebrtcPeer(printer.id); onFail && onFail(); }
+        };
+        const watchdog = setTimeout(() => { if (!(video.videoWidth > 0)) finish(false); }, 12000);
+        pc.ontrack = (event) => { video.srcObject = event.streams[0]; };
+        video.onloadeddata = () => { if (video.videoWidth > 0) finish(true); };
+        pc.onconnectionstatechange = () => {
+            if (['failed', 'closed', 'disconnected'].includes(pc.connectionState)) finish(false);
+        };
+
+        (async () => {
+            try {
+                const tr = pc.addTransceiver('video', { direction: 'recvonly' });
+                try {
+                    const h264 = RTCRtpReceiver.getCapabilities('video').codecs.filter(c => /H264/i.test(c.mimeType));
+                    if (h264.length && tr.setCodecPreferences) tr.setCodecPreferences(h264);
+                } catch (_) {}
+                await pc.setLocalDescription(await pc.createOffer());
+                await this.waitForIceGathering(pc); // non-trickle: libpeer wants a complete offer
+                const offer = pc.localDescription.sdp;
+                const resp = await fetch(this.getWebrtcEndpoint(printer), {
+                    method: 'POST', headers: { 'Content-Type': 'text/plain' },
+                    body: btoa(JSON.stringify({ type: 'offer', sdp: offer }))
+                });
+                if (!resp.ok) throw new Error('HTTP ' + resp.status);
+                const ans = JSON.parse(atob(await resp.text()));
+                if (ans.type !== 'answer') throw new Error('no answer');
+                ans.sdp = this.mungeWebrtcAnswer(offer, ans.sdp);
+                await pc.setRemoteDescription(new RTCSessionDescription(ans));
+            } catch (e) {
+                console.warn(`WebRTC unavailable for ${printer.name}:`, e.message || e);
+                finish(false);
+            }
+        })();
+    }
+
+    stopWebrtcPeer(id) {
         const pc = this.webrtcPeers.get(id);
         if (pc) { try { pc.close(); } catch (_) {} }
         this.webrtcPeers.delete(id);
@@ -211,19 +250,27 @@ class KlipperDashboard {
         if (video) { try { video.srcObject = null; } catch (_) {} }
     }
 
+    // Fully stop a printer's camera (WebRTC peer + MJPEG image).
+    stopWebrtcCamera(id) {
+        this.stopWebrtcPeer(id);
+        const img = document.getElementById(`cam-img-${id}`);
+        if (img) { img.onload = null; img.onerror = null; img.removeAttribute('src'); }
+        if (this._camActive) this._camActive.delete(id);
+    }
+
     startAllWebrtc() {
-        // Only (re)start cameras for printers that are actually online (WS open).
+        // Only start cameras for printers that are actually online (WS open).
         this.printers.forEach(p => {
             const ws = this.websockets.get(p.id);
-            if (!p.disabled && ws && ws.readyState === WebSocket.OPEN &&
-                this.cameraTypeOf(p) === 'creality-webrtc') {
+            if (!p.disabled && ws && ws.readyState === WebSocket.OPEN && this.cameraTypeOf(p) !== 'none') {
                 this.startWebrtcCamera(p);
             }
         });
     }
 
     stopAllWebrtc() {
-        Array.from(this.webrtcPeers.keys()).forEach(id => this.stopWebrtcCamera(id));
+        const ids = new Set([...(this._camActive || []), ...this.webrtcPeers.keys()]);
+        ids.forEach(id => this.stopWebrtcCamera(id));
     }
 
     setupEventListeners() {
@@ -625,14 +672,11 @@ class KlipperDashboard {
         const ip = this.getHostFromIp(printer.ip);
         const camType = this.cameraTypeOf(printer);
         let webcamInner = '';
-        if (camType === 'creality-webrtc') {
-            webcamInner = `<video class="webcam-stream" id="cam-${printer.id}" autoplay playsinline muted></video>
-               <div class="webcam-error" style="display:none;">Camera unavailable</div>`;
-        } else if (camType === 'mjpeg') {
-            const url = printer.webcamUrl || `http://${ip}:4408/webcam/?action=stream`;
-            webcamInner = `<img class="webcam-stream" src="${url}" alt="${printer.name} camera" loading="lazy"
-                     onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
-               <div class="webcam-error" style="display:none;">Camera unavailable</div>`;
+        if (camType !== 'none') {
+            // Both elements exist; startWebrtcCamera() shows whichever source connects.
+            webcamInner = `<video class="webcam-stream" id="cam-${printer.id}" autoplay playsinline muted style="display:none"></video>
+               <img class="webcam-stream" id="cam-img-${printer.id}" alt="${printer.name} camera" style="display:none">
+               <div class="webcam-error">Camera unavailable</div>`;
         }
         card.innerHTML = `
             <div class="card-actions">
@@ -789,7 +833,7 @@ class KlipperDashboard {
                 }
 
                 // Printer is reachable — now start its camera (avoids hammering offline printers)
-                if (this.showWebcams && this.cameraTypeOf(printer) === 'creality-webrtc') {
+                if (this.showWebcams && this.cameraTypeOf(printer) !== 'none') {
                     this.startWebrtcCamera(printer);
                 }
             };

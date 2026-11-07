@@ -11,7 +11,7 @@ notifications. Pure HTML/CSS/JS served by Caddy; **no build step**.
 - **Live reordering** — printing jobs float to the top automatically
 - **Dark & light themes** — toggle in the header, remembers your choice, follows system default
 - **Responsive** — works well on a phone for checking prints remotely
-- **Live cameras** — in-browser WebRTC feed per printer (Creality libpeer), to catch failed prints
+- **Live cameras** — per-printer feed to catch failed prints; auto-detects Creality WebRTC (K2) or MJPEG (K1C)
 - **Desktop notifications** — alerts when a print completes
 - **Real-time** — direct Moonraker WebSocket subscriptions (no polling lag)
 - **CORS-free proxy** — Caddy reverse-proxies printer APIs to avoid cross-origin issues
@@ -50,8 +50,14 @@ Default seeded printers (edit/remove in the UI, or edit `initializeDefaultPrinte
   handshake (H.264-only offer, non-trickle, answer payload-types reconciled to what the browser
   offered), routed through the Caddy proxy (same-origin); media connects peer-to-peer on the LAN.
   A camera starts only once its printer's Moonraker WebSocket is connected. Toggle with the 📷 button.
-  Note: the printer's camera service serves **one viewer at a time**, so a feed may be blank if the
-  Creality app or another browser tab is already watching that printer.
+
+  Camera type is per-printer (`cameraType`): `auto` (default — try WebRTC, then MJPEG), `creality-webrtc`,
+  `mjpeg`, or `none`. MJPEG printers (e.g. K1C) are read from `http://<ip>:4408/webcam/?action=stream`
+  (falls back to `:8080`). This means a mixed fleet (K2 Plus + K1C) works with no per-printer setup.
+
+  Notes: the WebRTC (K2) camera serves **one viewer at a time** — a feed is blank if the Creality app or
+  another tab is already watching. And printers are addressed by **IP**: if DHCP reassigns a printer's
+  address, update it via the card's ✏️ button (a DHCP reservation / static IP avoids this).
 - **Proxy** (optional, CORS): `GET /api/proxy/<ip>:<port>/<endpoint>` is reverse-proxied by Caddy.
 
 Each printer needs Moonraker reachable on the LAN. If you hit CORS issues when not using the
