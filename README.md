@@ -12,6 +12,7 @@ notifications. Pure HTML/CSS/JS served by Caddy; **no build step**.
 - **Dark & light themes** — toggle in the header, remembers your choice, follows system default
 - **Responsive** — works well on a phone for checking prints remotely
 - **Live cameras** — per-printer feed to catch failed prints; auto-detects Creality WebRTC (K2) or MJPEG (K1C)
+- **Network scan** — 🔍 discovers Moonraker printers on the LAN by hostname; add new ones or repoint an existing printer to its current IP in one click (handy when DHCP moves addresses)
 - **Desktop notifications** — alerts when a print completes
 - **Real-time** — direct Moonraker WebSocket subscriptions (no polling lag)
 - **CORS-free proxy** — Caddy reverse-proxies printer APIs to avoid cross-origin issues

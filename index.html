@@ -42,6 +42,9 @@
                 <button id="addPrinter" class="btn btn-primary" title="Add printer">
                     <span class="btn-ico">＋</span><span class="btn-txt">Add</span>
                 </button>
+                <button id="scanNetwork" class="btn btn-ghost" title="Scan network for printers">
+                    <span class="btn-ico">🔍</span><span class="btn-txt">Scan</span>
+                </button>
                 <button id="toggleWebcams" class="btn btn-ghost" title="Show / hide cameras" aria-pressed="true">
                     <span class="btn-ico">📷</span>
                 </button>
@@ -99,6 +102,22 @@
                 </div>
                 <button type="submit" class="btn btn-primary btn-block">Add Printer</button>
             </form>
+        </div>
+    </div>
+
+    <!-- Scan network modal -->
+    <div id="scanModal" class="modal">
+        <div class="modal-content modal-wide">
+            <button class="close" aria-label="Close">&times;</button>
+            <h2>Scan Network</h2>
+            <p class="scan-hint">Finds printers running Moonraker on your LAN. Add new ones, or point an existing printer at its current IP.</p>
+            <div class="scan-controls">
+                <label for="scanBase">Subnet</label>
+                <input type="text" id="scanBase" placeholder="10.0.68.">
+                <button id="scanStart" class="btn btn-small btn-primary">Scan</button>
+            </div>
+            <div class="scan-status" id="scanStatus"></div>
+            <div id="scanResults" class="scan-results"></div>
         </div>
     </div>
 

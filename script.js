@@ -273,10 +273,147 @@ class KlipperDashboard {
         ids.forEach(id => this.stopWebrtcCamera(id));
     }
 
+    // ---- Network scan: find Moonraker printers on the LAN (via the Caddy proxy) ----
+    scanBasePrefix() {
+        // Most common /24 among configured printers, else a sensible default.
+        const counts = {};
+        this.printers.forEach(p => {
+            const h = this.getHostFromIp(p.ip);
+            const m = h.match(/^(\d+\.\d+\.\d+)\.\d+$/);
+            if (m) counts[m[1]] = (counts[m[1]] || 0) + 1;
+        });
+        const best = Object.keys(counts).sort((a, b) => counts[b] - counts[a])[0];
+        return (best || '10.0.68') + '.';
+    }
+
+    async poolMap(items, limit, fn) {
+        let idx = 0;
+        const workers = Array.from({ length: limit }, async () => {
+            while (idx < items.length) { const i = idx++; await fn(items[i]); }
+        });
+        await Promise.all(workers);
+    }
+
+    async scanNetwork() {
+        if (this._scanning) return;
+        this._scanning = true;
+        this.scanFound = [];
+        const statusEl = document.getElementById('scanStatus');
+        const resultsEl = document.getElementById('scanResults');
+        const startBtn = document.getElementById('scanStart');
+        if (resultsEl) resultsEl.innerHTML = '';
+        if (startBtn) startBtn.disabled = true;
+
+        let base = (document.getElementById('scanBase') || {}).value || this.scanBasePrefix();
+        if (!base.endsWith('.')) base += '.';
+
+        const nums = Array.from({ length: 254 }, (_, i) => i + 1);
+        let scanned = 0;
+        const setStatus = () => { if (statusEl) statusEl.textContent = `Scanning ${base}1–254 … ${scanned}/254 checked, ${this.scanFound.length} found`; };
+        setStatus();
+
+        await this.poolMap(nums, 12, async (n) => {
+            const ip = base + n;
+            try {
+                const ctrl = new AbortController();
+                const timer = setTimeout(() => ctrl.abort(), 1200);
+                const r = await fetch(`/api/proxy/${ip}:7125/printer/info`, { signal: ctrl.signal });
+                clearTimeout(timer);
+                if (r.ok) {
+                    const j = await r.json();
+                    const hostname = (j && j.result && j.result.hostname) ? j.result.hostname : '';
+                    this.scanFound.push({ ip, hostname });
+                    this.renderScanResults();
+                }
+            } catch (_) { /* offline / not moonraker */ }
+            scanned++;
+            if (scanned % 6 === 0 || scanned === 254) setStatus();
+        });
+
+        if (statusEl) statusEl.textContent = `Done — found ${this.scanFound.length} printer(s) on ${base}0/24.`;
+        if (startBtn) startBtn.disabled = false;
+        this._scanning = false;
+        this.renderScanResults();
+    }
+
+    renderScanResults() {
+        const el = document.getElementById('scanResults');
+        if (!el) return;
+        const found = (this.scanFound || []).slice().sort((a, b) => {
+            const na = parseInt(a.ip.split('.').pop(), 10), nb = parseInt(b.ip.split('.').pop(), 10);
+            return na - nb;
+        });
+        el.innerHTML = found.map((f) => {
+            const i = this.scanFound.indexOf(f);
+            const known = this.printers.find(p => this.getHostFromIp(p.ip) === f.ip);
+            const label = f.hostname || 'Unknown printer';
+            if (known) {
+                return `<div class="scan-row is-known">
+                    <div><div class="scan-name">${label}</div><div class="scan-ip">${f.ip}</div></div>
+                    <div class="scan-actions"><span class="scan-done">✓ ${known.name}</span></div>
+                </div>`;
+            }
+            const options = ['<option value="new">➕ Add as new</option>']
+                .concat(this.printers.map(p => `<option value="${p.id}">↻ ${p.name}</option>`)).join('');
+            return `<div class="scan-row" id="scan-row-${i}">
+                <div><div class="scan-name">${label}</div><div class="scan-ip">${f.ip}</div></div>
+                <div class="scan-actions">
+                    <select id="scan-sel-${i}">${options}</select>
+                    <button class="btn btn-small btn-primary" onclick="dashboard.applyScan(${i})">Apply</button>
+                </div>
+            </div>`;
+        }).join('') || '<div class="scan-status">No printers found yet.</div>';
+    }
+
+    applyScan(i) {
+        const f = this.scanFound[i];
+        if (!f) return;
+        const sel = document.getElementById(`scan-sel-${i}`);
+        const choice = sel ? sel.value : 'new';
+        if (choice === 'new') {
+            this.addPrinterDirect(f.hostname || `Printer ${f.ip}`, f.ip);
+        } else {
+            this.updatePrinterIp(Number(choice), f.ip);
+        }
+        const row = document.getElementById(`scan-row-${i}`);
+        if (row) row.querySelector('.scan-actions').innerHTML = '<span class="scan-done">✓ Done</span>';
+    }
+
+    addPrinterDirect(name, ip) {
+        const clean = ip.replace(/^https?:\/\//, '');
+        if (this.printers.some(p => this.getHostFromIp(p.ip) === this.getHostFromIp(clean))) return;
+        this.printers.push({ id: Date.now(), name, ip: clean, disabled: false });
+        this.savePrinters();
+        this.renderPrinters();
+    }
+
+    updatePrinterIp(id, ip) {
+        const idx = this.printers.findIndex(p => p.id === id);
+        if (idx === -1) return;
+        const clean = ip.replace(/^https?:\/\//, '');
+        const ws = this.websockets.get(id);
+        if (ws) { try { ws.close(); } catch (_) {} }
+        this.stopWebrtcCamera(id);
+        this.printers[idx] = { ...this.printers[idx], ip: clean };
+        this.savePrinters();
+        this.renderPrinters();
+    }
+
     setupEventListeners() {
         document.getElementById('addPrinter').addEventListener('click', () => {
             this.openModal('addPrinterModal');
         });
+
+        // Scan network
+        const scanBtn = document.getElementById('scanNetwork');
+        if (scanBtn) scanBtn.addEventListener('click', () => {
+            const baseInput = document.getElementById('scanBase');
+            if (baseInput && !baseInput.value) baseInput.value = this.scanBasePrefix();
+            this.openModal('scanModal');
+            this.scanNetwork();
+        });
+        const scanStart = document.getElementById('scanStart');
+        if (scanStart) scanStart.addEventListener('click', () => this.scanNetwork());
 
         // Theme toggle
         const themeBtn = document.getElementById('themeToggle');
