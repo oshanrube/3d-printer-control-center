@@ -316,7 +316,7 @@ class KlipperDashboard {
             const ip = base + n;
             try {
                 const ctrl = new AbortController();
-                const timer = setTimeout(() => ctrl.abort(), 1200);
+                const timer = setTimeout(() => ctrl.abort(), 2000);
                 const r = await fetch(`/api/proxy/${ip}:7125/printer/info`, { signal: ctrl.signal });
                 clearTimeout(timer);
                 if (r.ok) {
