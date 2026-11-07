@@ -1,0 +1,33 @@
+:80 {
+    # Serve static files from /srv directory
+    root * /srv
+    file_server
+    
+    # Enable CORS for all responses
+    header {
+        Access-Control-Allow-Origin *
+        Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS"
+        Access-Control-Allow-Headers "Content-Type, Authorization"
+    }
+
+    # Generic proxy for any printer (format: /api/proxy/IP:PORT/endpoint)
+    @proxy path_regexp proxy /api/proxy/([^/]+)/(.*)
+    handle @proxy {
+        rewrite * /{re.proxy.2}
+        reverse_proxy {re.proxy.1} {
+            header_up Host {upstream_hostport}
+            header_up X-Real-IP {remote_host}
+        }
+    }
+    
+    # Handle preflight OPTIONS requests
+    @options {
+        method OPTIONS
+    }
+    respond @options 204
+    
+    # Logging
+    log {
+        output file /var/log/caddy/access.log
+    }
+}

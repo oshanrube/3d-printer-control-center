@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Printer Control Center</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>3D Printer Control Center</h1>
+            <div class="controls">
+                <button id="addPrinter">Add Printer</button>
+                <button id="enableNotifications" class="notification-btn">Enable Notifications</button>
+                <button id="testNotification">Test Notification</button>
+                <div class="settings">
+                    <label for="pollInterval">Poll Interval (seconds):</label>
+                    <input type="number" id="pollInterval" value="1" min="1" max="60">
+                    <button id="saveSettings">Save</button>
+                </div>
+            </div>
+        </header>
+
+        <main>
+            <div id="printerGrid" class="printer-grid">
+                <!-- Printer cards will be dynamically added here -->
+            </div>
+        </main>
+
+        <div id="addPrinterModal" class="modal">
+            <div class="modal-content">
+                <span class="close">&times;</span>
+                <h2>Add New Printer</h2>
+                <form id="addPrinterForm">
+                    <div class="form-group">
+                        <label for="printerName">Printer Name:</label>
+                        <input type="text" id="printerName" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="printerIP">Printer IP:</label>
+                        <input type="text" id="printerIP" placeholder="10.0.68.108" required>
+                    </div>
+                    <button type="submit">Add Printer</button>
+                </form>
+            </div>
+        </div>
+
+        <div id="editPrinterModal" class="modal">
+            <div class="modal-content">
+                <span class="close">&times;</span>
+                <h2>Edit Printer</h2>
+                <form id="editPrinterForm">
+                    <div class="form-group">
+                        <label for="editPrinterName">Printer Name:</label>
+                        <input type="text" id="editPrinterName" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="editPrinterIP">Printer IP:</label>
+                        <input type="text" id="editPrinterIP" placeholder="10.0.68.108" required>
+                    </div>
+                    <button type="submit">Save Changes</button>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
