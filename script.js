@@ -251,8 +251,11 @@ class KlipperDashboard {
 
         if (type === 'mjpeg') { tryMjpeg(); return; }
         // 'creality-webrtc' or 'auto'
-        this.connectWebrtc(printer, video, showVideo, () => {
-            if (type === 'auto') tryMjpeg(); else showErr();
+        this.connectWebrtc(printer, video, showVideo, (reason) => {
+            // Only fall back to MJPEG when there's no libpeer (an MJPEG-only printer).
+            // If libpeer answered but media failed, stay on WebRTC and let retry handle it.
+            if (type === 'auto' && reason === 'signaling') tryMjpeg();
+            else showErr();
         });
     }
 
@@ -267,12 +270,15 @@ class KlipperDashboard {
         // Keep the <video> visible during the attempt: a display:none video is not
         // reliably decoded by Chrome, so videoWidth/onloadeddata never fire.
         video.style.display = '';
-        let settled = false, poll = null;
+        let settled = false, poll = null, signalingOk = false;
         const finish = (ok) => {
             if (settled) return; settled = true;
             clearTimeout(watchdog); if (poll) clearInterval(poll);
             if (ok) { onSuccess && onSuccess(); }
-            else { this.stopWebrtcPeer(printer.id); onFail && onFail(); }
+            // 'signaling' = no libpeer here (an MJPEG printer) -> ok to try snapshots.
+            // 'media' = libpeer answered but the stream didn't connect (slot busy/jammed)
+            //           -> it IS a WebRTC printer; retry WebRTC, don't probe MJPEG.
+            else { this.stopWebrtcPeer(printer.id); onFail && onFail(signalingOk ? 'media' : 'signaling'); }
         };
         const watchdog = setTimeout(() => finish(video.videoWidth > 0), 13000);
         pc.ontrack = (event) => { video.srcObject = event.streams[0]; };
@@ -301,6 +307,7 @@ class KlipperDashboard {
                 if (ans.type !== 'answer') throw new Error('no answer');
                 ans.sdp = this.mungeWebrtcAnswer(offer, ans.sdp);
                 await pc.setRemoteDescription(new RTCSessionDescription(ans));
+                signalingOk = true; // libpeer is present and answered
             } catch (e) {
                 console.warn(`WebRTC unavailable for ${printer.name}:`, e.message || e);
                 finish(false);
