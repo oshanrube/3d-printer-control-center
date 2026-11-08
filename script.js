@@ -148,11 +148,38 @@ class KlipperDashboard {
         return out.filter(x => x !== '').join('\r\n') + '\r\n';
     }
 
-    mjpegCandidates(printer) {
+    // Single-frame JPEG snapshot endpoints. We poll these instead of using an
+    // MJPEG multipart stream, because iOS/Safari cannot render MJPEG in an <img>.
+    snapshotCandidates(printer) {
         const h = this.getHostFromIp(printer.ip);
-        return [printer.webcamUrl,
-                `http://${h}:4408/webcam/?action=stream`,
-                `http://${h}:8080/?action=stream`].filter(Boolean);
+        const list = [`http://${h}:4408/webcam/?action=snapshot`,
+                      `http://${h}:8080/?action=snapshot`];
+        if (printer.snapshotUrl) list.unshift(printer.snapshotUrl);
+        return list;
+    }
+
+    // Keep refreshing a snapshot <img> at ~3 fps — enough to spot a failed print,
+    // and works in every browser.
+    beginSnapshotLoop(printer, img, url) {
+        if (!this.snapshotStops) this.snapshotStops = new Map();
+        this.stopSnapshotLoop(printer.id);
+        const sep = url.includes('?') ? '&' : '?';
+        const stop = { stopped: false };
+        this.snapshotStops.set(printer.id, stop);
+        const nextFrame = (delay) => {
+            if (stop.stopped) return;
+            setTimeout(() => { if (!stop.stopped) img.src = url + sep + 't=' + Date.now(); }, delay);
+        };
+        img.onload = () => nextFrame(300);
+        img.onerror = () => nextFrame(1500);
+        nextFrame(300);
+    }
+
+    stopSnapshotLoop(id) {
+        if (this.snapshotStops && this.snapshotStops.has(id)) {
+            this.snapshotStops.get(id).stopped = true;
+            this.snapshotStops.delete(id);
+        }
     }
 
     // Orchestrator: start a printer's camera according to its type (default 'auto').
@@ -188,22 +215,27 @@ class KlipperDashboard {
         };
 
         const state = { done: false };
-        const showVideo = () => { state.done = true; if (video) video.style.display = ''; if (img) { img.style.display = 'none'; img.removeAttribute('src'); } if (err) err.style.display = 'none'; };
+        const showVideo = () => { state.done = true; this.stopSnapshotLoop(printer.id); if (video) video.style.display = ''; if (img) { img.style.display = 'none'; img.removeAttribute('src'); } if (err) err.style.display = 'none'; };
         const showImg   = () => { if (state.done) return; state.done = true; if (img) img.style.display = ''; if (video) video.style.display = 'none'; if (err) err.style.display = 'none'; };
         const showErr   = () => { if (state.done) return; if (video) video.style.display = 'none'; if (img) img.style.display = 'none'; if (err) err.style.display = 'flex'; scheduleRetry(); };
 
         const tryMjpeg = () => {
             if (state.done || !img) { showErr(); return; }
-            const urls = this.mjpegCandidates(printer); let i = 0;
-            const next = () => {
+            const urls = this.snapshotCandidates(printer); let i = 0;
+            const probe = () => {
                 if (state.done) return;
                 if (i >= urls.length) { showErr(); return; }
                 const u = urls[i++];
-                img.onload = () => { if (!state.done) showImg(); };
-                img.onerror = () => { next(); };
-                img.src = u;
+                const sep = u.includes('?') ? '&' : '?';
+                img.onload = () => {
+                    if (state.done) return;
+                    showImg();
+                    this.beginSnapshotLoop(printer, img, u); // keep refreshing ~3 fps
+                };
+                img.onerror = () => { probe(); };
+                img.src = u + sep + 't=' + Date.now();
             };
-            next();
+            probe();
         };
 
         if (type === 'mjpeg') { tryMjpeg(); return; }
@@ -273,9 +305,10 @@ class KlipperDashboard {
         if (video) { try { video.srcObject = null; } catch (_) {} }
     }
 
-    // Fully stop a printer's camera (WebRTC peer + MJPEG image + pending retry).
+    // Fully stop a printer's camera (WebRTC peer + MJPEG snapshot loop + pending retry).
     stopWebrtcCamera(id) {
         this.stopWebrtcPeer(id);
+        this.stopSnapshotLoop(id);
         const img = document.getElementById(`cam-img-${id}`);
         if (img) { img.onload = null; img.onerror = null; img.removeAttribute('src'); }
         const rt = this.camRetryTimers.get(id);
