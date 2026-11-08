@@ -2,7 +2,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { config } from './config.js';
 import { eventsRepo, printsRepo } from './db.js';
-import { fetchSnapshot } from './camera.js';
+import { captureForDataset } from './camera.js';
 import { sendPush } from './push.js';
 import type { Fleet } from './fleet.js';
 import type { LiveState, PrinterEvent, EventType, Severity } from './types.js';
@@ -144,7 +144,7 @@ export class Engine {
     if (!st || !client) return;
     let snapName: string | null = null;
     try {
-      const shot = await fetchSnapshot(client.printer);
+      const shot = await captureForDataset(client.printer);
       if (shot && t.snapshotDir) {
         snapName = `${Date.now()}.jpg`;
         writeFileSync(join(config.dataDir, t.snapshotDir, snapName), shot.body);

@@ -1,13 +1,20 @@
 import type { Printer } from './types.js';
+import { relay } from './webrtc-relay.js';
 
 /**
  * Camera access from the backend. The Pi (backend) can reach every printer —
  * including ones on an isolated IoT SSID — so the frontend only talks to us.
  *
  * MJPEG printers (K1/K1C) expose single-frame snapshots we poll/relay.
- * WebRTC-only printers (K2 etc.) have no snapshot endpoint; backend relay of
- * their stream needs a WebRTC client (phase 2), so snapshot() returns null.
+ * WebRTC-only printers (K2 etc.) have no snapshot endpoint, so we drive a
+ * headless-Chromium WebRTC relay (webrtc-relay.ts) and serve its latest JPEG
+ * frame here — same shape as an MJPEG snapshot.
  */
+
+// Printers whose camera we should try over WebRTC.
+function wantsWebrtc(printer: Printer): boolean {
+  return printer.cameraType === 'webrtc' || printer.cameraType === 'auto';
+}
 
 function host(printer: Printer): string {
   return String(printer.ip).replace(/^https?:\/\//, '').split(':')[0];
@@ -25,6 +32,16 @@ export function snapshotCandidates(printer: Printer): string[] {
 const workingUrl = new Map<number, string>();
 
 export async function fetchSnapshot(printer: Printer): Promise<{ body: Buffer; contentType: string } | null> {
+  // WebRTC-capable cameras: keep the relay warm and serve its latest frame.
+  if (wantsWebrtc(printer)) {
+    relay.ensure(printer);   // idempotent; starts Chromium page if needed
+    relay.touch(printer.id); // mark as actively viewed
+    const frame = relay.getFrame(printer.id);
+    if (frame) return { body: frame, contentType: 'image/jpeg' };
+    // 'webrtc' (explicit) has no MJPEG fallback; for 'auto' fall through to MJPEG.
+    if (printer.cameraType === 'webrtc') return null;
+  }
+
   const urls = (() => {
     const w = workingUrl.get(printer.id);
     const cands = snapshotCandidates(printer);
@@ -53,4 +70,19 @@ export async function fetchSnapshot(printer: Printer): Promise<{ body: Buffer; c
 
 export function hasMjpegCamera(printer: Printer): boolean {
   return workingUrl.has(printer.id);
+}
+
+/**
+ * Snapshot for dataset logging (engine). Unlike fetchSnapshot (live viewing),
+ * this does NOT take a live hold on the WebRTC relay — it warms, grabs one
+ * frame, and lets the page be reclaimed, so a printing camera decodes in short
+ * bursts instead of pinning a CPU core for the whole print.
+ */
+export async function captureForDataset(printer: Printer): Promise<{ body: Buffer; contentType: string } | null> {
+  if (wantsWebrtc(printer)) {
+    const frame = await relay.grab(printer);
+    if (frame) return { body: frame, contentType: 'image/jpeg' };
+    if (printer.cameraType === 'webrtc') return null;
+  }
+  return fetchSnapshot(printer);
 }

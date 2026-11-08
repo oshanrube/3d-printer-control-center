@@ -4,6 +4,7 @@ import { initPush } from './push.js';
 import { Fleet } from './fleet.js';
 import { Engine } from './engine.js';
 import { buildServer } from './server.js';
+import { relay } from './webrtc-relay.js';
 
 function seedIfEmpty() {
   if (printersRepo.all().length > 0) return;
@@ -25,6 +26,7 @@ function seedIfEmpty() {
 async function main() {
   initPush();
   seedIfEmpty();
+  await relay.init();  // launches headless Chromium for WebRTC cameras (no-op if unavailable)
 
   const fleet = new Fleet();
   const { app, broadcastEvent } = buildServer(fleet);
@@ -38,6 +40,7 @@ async function main() {
   const shutdown = async () => {
     console.log('\n[server] shutting down...');
     fleet.stop();
+    try { await relay.stop(); } catch { /* ignore */ }
     try { await app.close(); } catch { /* ignore */ }
     process.exit(0);
   };

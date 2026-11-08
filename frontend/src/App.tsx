@@ -54,7 +54,7 @@ function Camera({ printer }: { printer: Printer }) {
           onLoad={() => { setFailed(false); setTimeout(() => setSrc(api.snapshotUrl(printer.id) + '?t=' + Date.now()), 350); }}
           onError={() => { setFailed(true); setTimeout(() => { setFailed(false); setSrc(api.snapshotUrl(printer.id) + '?t=' + Date.now()); }, 4000); }} />
       )}
-      {failed && <div class="noimg">{printer.cameraType === 'webrtc' ? 'WebRTC camera (not relayed yet)' : 'Camera unavailable'}</div>}
+      {failed && <div class="noimg">{printer.cameraType === 'webrtc' ? 'Connecting camera…' : 'Camera unavailable'}</div>}
     </div>
   );
 }

@@ -2,13 +2,15 @@ services:
   control-center:
     build: .
     container_name: 3d-printer-control-center
-    expose:
-      - "8082"
-    ports:
-      - "8081:8082"   # optional plain-HTTP LAN access (no push over this origin)
+    # Host networking is REQUIRED: the headless-Chromium WebRTC relay must
+    # advertise the Pi's real LAN IP as its ICE candidate so printers can send
+    # media back. On a bridge network Chromium would offer a 172.x address that
+    # the printers can't reach, and no video would ever arrive.
+    network_mode: host
     restart: unless-stopped
     environment:
       - TZ=UTC
+      - PORT=8081            # app binds :8081 directly on the host (no port mapping in host mode)
       # Engine tuning (optional):
       # - AUTO_PAUSE_RUNOUT=1
       # - AUTO_PAUSE_ERROR=1
@@ -20,11 +22,12 @@ services:
 
   # Cloudflare Tunnel -> real HTTPS + remote access (required for Web Push).
   # 1) Create a tunnel in Cloudflare Zero Trust (Networks -> Tunnels).
-  # 2) Add a Public Hostname mapping your subdomain -> http://control-center:8082
+  # 2) Add a Public Hostname mapping your subdomain -> http://localhost:8081
   # 3) Put the tunnel token in ./.env  (CLOUDFLARE_TUNNEL_TOKEN=...)
   cloudflared:
     image: cloudflare/cloudflared:2024.8.3
     container_name: cc-cloudflared
+    network_mode: host    # reach control-center on localhost:8081
     restart: unless-stopped
     command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
     depends_on:
