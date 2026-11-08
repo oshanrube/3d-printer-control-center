@@ -10,6 +10,7 @@ class KlipperDashboard {
         this.printerCache = new Map(); // Cache printer data to merge updates
         this.printerStates = new Map(); // id -> { state, progress } for fleet overview + ordering
         this.webrtcPeers = new Map(); // id -> RTCPeerConnection (Creality libpeer WebRTC cameras)
+        this.camRetryTimers = new Map(); // id -> retry timeout (auto-reconnect fragile WebRTC cams)
         this.currentFilter = 'all';
         this.showWebcams = (localStorage.getItem('showWebcams') ?? '1') === '1';
         this.theme = localStorage.getItem('theme') ||
@@ -168,11 +169,28 @@ class KlipperDashboard {
         const container = (video && video.parentElement) || (img && img.parentElement);
         const err = container ? container.querySelector('.webcam-error') : null;
         this._camActive.add(printer.id);
+        // Clear any pending retry — we're attempting now.
+        const rt = this.camRetryTimers.get(printer.id);
+        if (rt) { clearTimeout(rt); this.camRetryTimers.delete(printer.id); }
+
+        // Fragile WebRTC cams jam intermittently; retry while the printer is online.
+        const scheduleRetry = () => {
+            if (this.camRetryTimers.has(printer.id)) return;
+            const t = setTimeout(() => {
+                this.camRetryTimers.delete(printer.id);
+                this.stopWebrtcCamera(printer.id); // clears _camActive, closes pc, resets img
+                const ws = this.websockets.get(printer.id);
+                if (this.showWebcams && !printer.disabled && ws && ws.readyState === WebSocket.OPEN) {
+                    this.startWebrtcCamera(printer);
+                }
+            }, 20000);
+            this.camRetryTimers.set(printer.id, t);
+        };
 
         const state = { done: false };
         const showVideo = () => { state.done = true; if (video) video.style.display = ''; if (img) { img.style.display = 'none'; img.removeAttribute('src'); } if (err) err.style.display = 'none'; };
         const showImg   = () => { if (state.done) return; state.done = true; if (img) img.style.display = ''; if (video) video.style.display = 'none'; if (err) err.style.display = 'none'; };
-        const showErr   = () => { if (state.done) return; if (err) err.style.display = 'flex'; };
+        const showErr   = () => { if (state.done) return; if (video) video.style.display = 'none'; if (img) img.style.display = 'none'; if (err) err.style.display = 'flex'; scheduleRetry(); };
 
         const tryMjpeg = () => {
             if (state.done || !img) { showErr(); return; }
@@ -203,18 +221,23 @@ class KlipperDashboard {
         try { pc = new RTCPeerConnection(); } catch (e) { onFail && onFail(); return; }
         this.webrtcPeers.set(printer.id, pc);
 
-        let settled = false;
+        // Keep the <video> visible during the attempt: a display:none video is not
+        // reliably decoded by Chrome, so videoWidth/onloadeddata never fire.
+        video.style.display = '';
+        let settled = false, poll = null;
         const finish = (ok) => {
-            if (settled) return; settled = true; clearTimeout(watchdog);
-            if (ok) onSuccess && onSuccess();
+            if (settled) return; settled = true;
+            clearTimeout(watchdog); if (poll) clearInterval(poll);
+            if (ok) { onSuccess && onSuccess(); }
             else { this.stopWebrtcPeer(printer.id); onFail && onFail(); }
         };
-        const watchdog = setTimeout(() => { if (!(video.videoWidth > 0)) finish(false); }, 12000);
+        const watchdog = setTimeout(() => finish(video.videoWidth > 0), 13000);
         pc.ontrack = (event) => { video.srcObject = event.streams[0]; };
-        video.onloadeddata = () => { if (video.videoWidth > 0) finish(true); };
         pc.onconnectionstatechange = () => {
             if (['failed', 'closed', 'disconnected'].includes(pc.connectionState)) finish(false);
         };
+        // Poll for decoded frames — reliable, unlike the onloadeddata event.
+        poll = setInterval(() => { if (video.videoWidth > 0) finish(true); }, 400);
 
         (async () => {
             try {
@@ -250,11 +273,13 @@ class KlipperDashboard {
         if (video) { try { video.srcObject = null; } catch (_) {} }
     }
 
-    // Fully stop a printer's camera (WebRTC peer + MJPEG image).
+    // Fully stop a printer's camera (WebRTC peer + MJPEG image + pending retry).
     stopWebrtcCamera(id) {
         this.stopWebrtcPeer(id);
         const img = document.getElementById(`cam-img-${id}`);
         if (img) { img.onload = null; img.onerror = null; img.removeAttribute('src'); }
+        const rt = this.camRetryTimers.get(id);
+        if (rt) { clearTimeout(rt); this.camRetryTimers.delete(id); }
         if (this._camActive) this._camActive.delete(id);
     }
 
