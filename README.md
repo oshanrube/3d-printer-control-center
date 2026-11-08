@@ -1,101 +1,79 @@
 # 3D Printer Control Center
 
-A fast, modern web dashboard for monitoring multiple Klipper / Moonraker 3D printers
-at a glance — live status, temperatures, and print progress, with desktop
-notifications. Pure HTML/CSS/JS served by Caddy; **no build step**.
+A self-hosted control center for a fleet of Klipper/Moonraker 3D printers, built to
+**detect print failures, auto-pause, and push alerts** — running on an Orange Pi.
 
-## Features
+It replaces the earlier static dashboard (kept under [`legacy/`](legacy/)) with a proper
+**backend + frontend** architecture. The backend runs on the Pi (wired, reaches every
+printer — even ones on an isolated IoT WiFi), so your phone only ever talks to the Pi.
 
-- **Fleet overview header** — live counts of Printing / Ready / Done / Offline, click a tile to filter
-- **At-a-glance cards** — status badge, bold progress bar, bed/nozzle temps, elapsed + ETA
-- **Live reordering** — printing jobs float to the top automatically
-- **Dark & light themes** — toggle in the header, remembers your choice, follows system default
-- **Responsive** — works well on a phone for checking prints remotely
-- **Live cameras** — per-printer feed to catch failed prints; auto-detects Creality WebRTC (K2) or MJPEG (K1C)
-- **Network scan** — 🔍 discovers Moonraker printers on the LAN by hostname; add new ones or repoint an existing printer to its current IP in one click (handy when DHCP moves addresses)
-- **Desktop notifications** — alerts when a print completes
-- **Real-time** — direct Moonraker WebSocket subscriptions (no polling lag)
-- **CORS-free proxy** — Caddy reverse-proxies printer APIs to avoid cross-origin issues
-- **Persistent** — printers and settings saved in browser localStorage
+## What it does
 
-## Quick Start (Docker)
+- **Live fleet monitoring** — one persistent Moonraker connection per printer; status,
+  progress, temps, ETA, filament sensor, streamed to the UI over WebSocket.
+- **Failure-detection engine** (rule-based):
+  - ✅ Print finished → push
+  - 🧵 Filament runout → **auto-pause** + push
+  - ⚠️ Klipper/firmware error, thermal fault, shutdown → push
+  - ⏳ Stall heuristic (no progress while "printing") → push
+  - 📴 Printer offline mid-print → push
+- **Controls** — pause / resume / cancel from the UI (and auto-pause from the engine).
+- **Web Push notifications** to the installable PWA (works great on Android).
+- **Camera** — backend relays MJPEG snapshots (so isolated-network cameras work on your
+  phone). WebRTC-only printers (K2) are relayed in a later phase.
+- **Network scan** — finds Moonraker printers on the LAN by hostname (DHCP-drift recovery).
+- **Training dataset** — every print is logged (telemetry time-series + periodic camera
+  frames, labeled by outcome) under `data/`, to train a vision failure-detector later.
+
+## Architecture
+
+```
+Printers (Moonraker)  ──►  Backend (Node/TS on the Pi)  ──►  Frontend PWA (phone)
+                            - Fleet: WS per printer            - live grid + controls
+                            - Engine: rules + auto-pause       - events feed
+                            - SQLite: events/prints/telemetry  - web push
+                            - web-push (VAPID)                 - camera (via backend)
+                            - camera snapshot relay
+                            - serves the built frontend + REST + /ws
+```
+
+- **Backend**: `backend/` — Node 20 + TypeScript, Fastify, `ws`, `better-sqlite3`, `web-push`.
+- **Frontend**: `frontend/` — Preact + Vite PWA.
+- Both are built and served from one container (see `Dockerfile`).
+
+## Run
 
 ```bash
-docker compose up -d --build
+docker compose up -d --build      # serves on http://<pi>:8081
 ```
 
-Then open **http://<host>:8081**.
+Data (SQLite DB + captured snapshots) persists in `./data`. On first run the current
+fleet is seeded; edit printers in the UI (✏️) or use 🔍 Scan.
 
-Default seeded printers (edit/remove in the UI, or edit `initializeDefaultPrinters()` in `script.js`):
+### Notable env (docker-compose.yml)
 
-| Name            | IP            |
-|-----------------|---------------|
-| Mokey D. Luffy  | 10.0.68.108   |
-| Roronoa Zoro    | 10.0.68.130   |
-| Nami            | 10.0.68.121   |
-| Usopp           | 10.0.68.116   |
-| Sanji           | 10.0.68.124   |
-| K2 Plus         | 10.0.68.21    |
+| Var | Default | Meaning |
+|-----|---------|---------|
+| `AUTO_PAUSE_RUNOUT` | `1` | Auto-pause on filament runout |
+| `AUTO_PAUSE_ERROR` | `1` | Treat Klipper error as halt |
+| `STALL_MINUTES` | `8` | No-progress window before a stall alert |
+| `DATASET_SNAPSHOT_SEC` | `20` | Capture interval for the training dataset |
+| `VAPID_SUBJECT` | `mailto:admin@local` | Contact for web-push |
 
-> Printers live in browser localStorage. On an install that already had a saved list,
-> a one-time `ensureK2Plus()` migration injects the K2 Plus if it's missing (guarded by a
-> flag, so it won't return if you deliberately remove it).
+## API (selected)
 
-## How it connects to printers
+- `GET /api/printers` · `POST /api/printers` · `PATCH /api/printers/:id` · `DELETE /api/printers/:id`
+- `POST /api/printers/:id/{pause|resume|cancel}`
+- `GET /api/events` · `GET /api/prints` · `GET /api/scan?base=10.0.68`
+- `GET /api/camera/:id/snapshot`
+- `GET /api/push/vapid` · `POST /api/push/subscribe` · `POST /api/push/test`
+- `GET /ws` — live state + events
 
-- **Status**: the browser opens `ws://<printer-ip>:7125/websocket` and subscribes to
-  `print_stats`, `heater_bed`, `extruder`, `display_status`, and `virtual_sdcard`.
-- **Live camera (Creality WebRTC)** — plays each printer's camera in-browser for spotting failed prints.
-  Creality K-series printers (K2 Plus, K1C, …) serve the camera via an embedded WebRTC stack
-  (`libpeer`) on port 8000, signaled at `POST /call/webrtc_local`. The dashboard performs that
-  handshake (H.264-only offer, non-trickle, answer payload-types reconciled to what the browser
-  offered), routed through the Caddy proxy (same-origin); media connects peer-to-peer on the LAN.
-  A camera starts only once its printer's Moonraker WebSocket is connected. Toggle with the 📷 button.
+## Roadmap
 
-  Camera type is per-printer (`cameraType`): `auto` (default — try WebRTC, then MJPEG), `creality-webrtc`,
-  `mjpeg`, or `none`. MJPEG printers (e.g. K1C) are read from `http://<ip>:4408/webcam/?action=stream`
-  (falls back to `:8080`). This means a mixed fleet (K2 Plus + K1C) works with no per-printer setup.
-
-  Notes: the WebRTC (K2) camera serves **one viewer at a time** — a feed is blank if the Creality app or
-  another tab is already watching. And printers are addressed by **IP**: if DHCP reassigns a printer's
-  address, update it via the card's ✏️ button (a DHCP reservation / static IP avoids this).
-- **Proxy** (optional, CORS): `GET /api/proxy/<ip>:<port>/<endpoint>` is reverse-proxied by Caddy.
-
-Each printer needs Moonraker reachable on the LAN. If you hit CORS issues when not using the
-Docker/Caddy setup, add to `moonraker.conf`:
-
-```
-[authorization]
-cors_domains:
-    *
-```
-
-## Configuration
-
-- **Add / edit / remove / disable** printers from the UI.
-- **Poll interval** and **test notification** live in the ⚙️ settings panel.
-- **Theme** (🌙/☀️) toggle is in the header.
-
-## Docker
-
-```bash
-docker compose up -d --build   # build + start
-docker compose logs -f         # logs
-docker compose down            # stop
-```
-
-Change the published port in `docker-compose.yml` (`"8081:80"`).
-
-## File structure
-
-```
-├── index.html      # Markup: topbar, overview, grid, modals
-├── styles.css      # Design tokens + dark/light themes + responsive layout
-├── script.js       # KlipperDashboard class: WS, state, overview, theming
-├── Caddyfile       # Static file server + CORS + printer proxy
-├── Dockerfile      # caddy:2.7-alpine
-└── docker-compose.yml
-```
+- WebRTC camera relay for K2-class printers (backend-side WebRTC client).
+- Vision-based spaghetti/failure detection trained on the captured dataset.
+- Per-printer notification rules and quiet hours.
 
 ## License
 

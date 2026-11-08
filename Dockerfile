@@ -1,16 +1,31 @@
-FROM caddy:2.7-alpine
+# ---------- Frontend build ----------
+FROM node:20-bookworm-slim AS frontend
+WORKDIR /fe
+COPY frontend/package.json ./
+RUN npm install --no-audit --no-fund
+COPY frontend/ ./
+RUN npm run build
 
-# Copy the web application files
-COPY index.html /srv/
-COPY styles.css /srv/
-COPY script.js /srv/
-COPY README.md /srv/
+# ---------- Backend build (TS -> JS, native deps) ----------
+FROM node:20-bookworm-slim AS backend
+WORKDIR /be
+COPY backend/package.json ./
+RUN npm install --no-audit --no-fund
+COPY backend/ ./
+RUN npm run build
 
-# Copy Caddyfile configuration
-COPY Caddyfile /etc/caddy/Caddyfile
-
-# Expose port 80
-EXPOSE 80
-
-# Start Caddy
-CMD ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
+# ---------- Runtime ----------
+FROM node:20-bookworm-slim
+WORKDIR /app
+ENV NODE_ENV=production \
+    PORT=8082 \
+    HOST=0.0.0.0 \
+    DATA_DIR=/data \
+    FRONTEND_DIR=/app/frontend
+COPY --from=backend /be/node_modules ./node_modules
+COPY --from=backend /be/dist ./dist
+COPY --from=backend /be/package.json ./package.json
+COPY --from=frontend /fe/dist ./frontend
+RUN mkdir -p /data
+EXPOSE 8082
+CMD ["node", "dist/index.js"]

@@ -1,5 +1,11 @@
-/logs/access-2025-08-25T09-21-11.489.log.gz
-/logs/access.log
-
-# harness / tooling
+node_modules/
+dist/
+build/
+data/
+logs/
+*.log
 .claude/
+.DS_Store
+.env
+backend/data/
+frontend/dist/

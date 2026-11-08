@@ -1,0 +1,144 @@
+import Fastify from 'fastify';
+import fastifyStatic from '@fastify/static';
+import fastifyWebsocket from '@fastify/websocket';
+import { existsSync } from 'node:fs';
+import type { WebSocket } from 'ws';
+import { config } from './config.js';
+import { printersRepo, eventsRepo, printsRepo } from './db.js';
+import { getPublicKey, subscribe, unsubscribe, sendPush } from './push.js';
+import { fetchSnapshot } from './camera.js';
+import { scanSubnet } from './scan.js';
+import type { Fleet } from './fleet.js';
+import type { LiveState, PrinterEvent } from './types.js';
+
+export function buildServer(fleet: Fleet) {
+  const app = Fastify({ logger: false });
+  app.register(fastifyWebsocket);
+
+  const clients = new Set<WebSocket>();
+  const send = (sock: WebSocket, obj: any) => { try { sock.send(JSON.stringify(obj)); } catch { /* ignore */ } };
+  const broadcast = (obj: any) => { for (const c of clients) send(c, obj); };
+
+  // Live state updates -> all ws clients
+  fleet.on('state', (s: LiveState) => broadcast({ type: 'state', state: s }));
+  // Engine events are forwarded here via broadcastEvent()
+  const broadcastEvent = (e: PrinterEvent) => broadcast({ type: 'event', event: e });
+
+  function printersWithState() {
+    return printersRepo.all().map(p => ({ ...p, live: fleet.getState(p.id) || null }));
+  }
+
+  app.register(async (f) => {
+    f.get('/ws', { websocket: true }, (conn) => {
+      const sock = conn.socket as unknown as WebSocket;
+      clients.add(sock);
+      send(sock, { type: 'snapshot', printers: printersWithState(), events: eventsRepo.recent(50) });
+      sock.on('close', () => clients.delete(sock));
+      sock.on('message', () => { /* client is read-only over ws for now */ });
+    });
+  });
+
+  // ---- REST API ----
+  app.get('/api/health', async () => ({ ok: true, time: Date.now() }));
+
+  app.get('/api/printers', async () => printersWithState());
+
+  app.post('/api/printers', async (req, reply) => {
+    const b = req.body as any;
+    if (!b?.name || !b?.ip) return reply.code(400).send({ error: 'name and ip required' });
+    const p = printersRepo.add({
+      name: String(b.name), ip: String(b.ip).replace(/^https?:\/\//, ''),
+      moonrakerPort: b.moonrakerPort || config.moonrakerPort,
+      cameraType: b.cameraType || 'auto', disabled: !!b.disabled,
+    });
+    fleet.reconcile();
+    return p;
+  });
+
+  app.patch('/api/printers/:id', async (req, reply) => {
+    const id = Number((req.params as any).id);
+    const b = req.body as any;
+    const patch: any = {};
+    for (const k of ['name', 'ip', 'cameraType', 'moonrakerPort', 'disabled']) if (k in b) patch[k] = b[k];
+    if (patch.ip) patch.ip = String(patch.ip).replace(/^https?:\/\//, '');
+    const p = printersRepo.update(id, patch);
+    if (!p) return reply.code(404).send({ error: 'not found' });
+    fleet.reconcile();
+    return p;
+  });
+
+  app.delete('/api/printers/:id', async (req) => {
+    const id = Number((req.params as any).id);
+    printersRepo.remove(id);
+    fleet.reconcile();
+    return { ok: true };
+  });
+
+  // Control actions
+  for (const action of ['pause', 'resume', 'cancel'] as const) {
+    app.post(`/api/printers/:id/${action}`, async (req, reply) => {
+      const id = Number((req.params as any).id);
+      const client = fleet.client(id);
+      if (!client) return reply.code(404).send({ error: 'not connected' });
+      try { await client[action](); return { ok: true }; }
+      catch (e: any) { return reply.code(502).send({ error: e?.message || 'action failed' }); }
+    });
+  }
+
+  app.get('/api/events', async (req) => {
+    const limit = Math.min(500, Number((req.query as any)?.limit) || 100);
+    return eventsRepo.recent(limit);
+  });
+
+  app.get('/api/prints', async () => printsRepo.recent(50));
+
+  // Camera snapshot relay (backend reaches every printer)
+  app.get('/api/camera/:id/snapshot', async (req, reply) => {
+    const id = Number((req.params as any).id);
+    const p = printersRepo.get(id);
+    if (!p) return reply.code(404).send();
+    const shot = await fetchSnapshot(p);
+    if (!shot) return reply.code(502).send();
+    reply.header('Content-Type', shot.contentType);
+    reply.header('Cache-Control', 'no-store');
+    return reply.send(shot.body);
+  });
+
+  // Network scan
+  app.get('/api/scan', async (req) => {
+    const base = String((req.query as any)?.base || defaultBase());
+    const found = await scanSubnet(base);
+    const known = new Set(printersRepo.all().map(p => String(p.ip).split(':')[0]));
+    return found.map(f => ({ ...f, known: known.has(f.ip) }));
+  });
+
+  // ---- Push ----
+  app.get('/api/push/vapid', async () => ({ publicKey: getPublicKey() }));
+  app.post('/api/push/subscribe', async (req) => { subscribe(req.body as any); return { ok: true }; });
+  app.post('/api/push/unsubscribe', async (req) => { unsubscribe((req.body as any)?.endpoint); return { ok: true }; });
+  app.post('/api/push/test', async () => {
+    await sendPush({ title: 'Control Center', body: 'Test notification ✅', tag: 'test' });
+    return { ok: true };
+  });
+
+  // ---- Static frontend (SPA) ----
+  if (existsSync(config.frontendDir)) {
+    app.register(fastifyStatic, { root: config.frontendDir });
+    app.setNotFoundHandler((req, reply) => {
+      if (req.raw.url && req.raw.url.startsWith('/api')) return reply.code(404).send({ error: 'not found' });
+      return reply.sendFile('index.html');
+    });
+  }
+
+  return { app, broadcastEvent };
+}
+
+function defaultBase(): string {
+  const counts: Record<string, number> = {};
+  for (const p of printersRepo.all()) {
+    const m = String(p.ip).match(/^(\d+\.\d+\.\d+)\.\d+/);
+    if (m) counts[m[1]] = (counts[m[1]] || 0) + 1;
+  }
+  const best = Object.keys(counts).sort((a, b) => counts[b] - counts[a])[0];
+  return best || '10.0.68';
+}

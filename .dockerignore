@@ -1,0 +1,9 @@
+**/node_modules
+**/dist
+**/build
+data
+logs
+legacy
+.git
+.claude
+*.log

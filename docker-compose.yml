@@ -1,18 +1,17 @@
 services:
   control-center:
     build: .
-    ports:
-      - "8081:80"
-    restart: unless-stopped
     container_name: 3d-printer-control-center
+    ports:
+      - "8081:8082"
+    restart: unless-stopped
     environment:
       - TZ=UTC
+      # Engine tuning (optional):
+      # - AUTO_PAUSE_RUNOUT=1
+      # - AUTO_PAUSE_ERROR=1
+      # - STALL_MINUTES=8
+      # - DATASET_SNAPSHOT_SEC=20
+      # - VAPID_SUBJECT=mailto:you@example.com
     volumes:
-      # Optional: Mount log directory for debugging
-      - ./logs:/var/log/caddy
-    healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:80"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
+      - ./data:/data
