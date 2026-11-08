@@ -50,6 +50,25 @@ docker compose up -d --build      # serves on http://<pi>:8081
 Data (SQLite DB + captured snapshots) persists in `./data`. On first run the current
 fleet is seeded; edit printers in the UI (✏️) or use 🔍 Scan.
 
+### HTTPS + remote access + Web Push (Cloudflare Tunnel)
+
+Browsers only allow service workers / **Web Push on a secure (HTTPS) origin**, so the
+plain `http://<pi>:8081` LAN URL can't do push. A Cloudflare Tunnel gives a real HTTPS
+cert on your own subdomain and lets you reach the dashboard from anywhere.
+
+1. In **Cloudflare Zero Trust → Networks → Tunnels**, create a tunnel.
+2. Add a **Public Hostname**: `printers.yourdomain.com` → **Service** `http://control-center:8082`.
+3. Copy the tunnel **token**, then on the Pi:
+   ```bash
+   cp .env.example .env         # then paste CLOUDFLARE_TUNNEL_TOKEN=... and VAPID_SUBJECT
+   docker compose --profile tunnel up -d
+   ```
+4. Open `https://printers.yourdomain.com`, tap **🔔 Enable**, allow notifications.
+   (Add it to your home screen for the best PWA/push experience.)
+
+Without the tunnel, run `docker compose up -d` (the `cloudflared` service only starts
+under the `tunnel` profile).
+
 ### Notable env (docker-compose.yml)
 
 | Var | Default | Meaning |

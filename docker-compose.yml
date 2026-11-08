@@ -2,8 +2,10 @@ services:
   control-center:
     build: .
     container_name: 3d-printer-control-center
+    expose:
+      - "8082"
     ports:
-      - "8081:8082"
+      - "8081:8082"   # optional plain-HTTP LAN access (no push over this origin)
     restart: unless-stopped
     environment:
       - TZ=UTC
@@ -12,6 +14,20 @@ services:
       # - AUTO_PAUSE_ERROR=1
       # - STALL_MINUTES=8
       # - DATASET_SNAPSHOT_SEC=20
-      # - VAPID_SUBJECT=mailto:you@example.com
+      - VAPID_SUBJECT=${VAPID_SUBJECT:-mailto:admin@local}
     volumes:
       - ./data:/data
+
+  # Cloudflare Tunnel -> real HTTPS + remote access (required for Web Push).
+  # 1) Create a tunnel in Cloudflare Zero Trust (Networks -> Tunnels).
+  # 2) Add a Public Hostname mapping your subdomain -> http://control-center:8082
+  # 3) Put the tunnel token in ./.env  (CLOUDFLARE_TUNNEL_TOKEN=...)
+  cloudflared:
+    image: cloudflare/cloudflared:2024.8.3
+    container_name: cc-cloudflared
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+    depends_on:
+      - control-center
+    profiles:
+      - tunnel   # only starts when the 'tunnel' profile is enabled (token set)
