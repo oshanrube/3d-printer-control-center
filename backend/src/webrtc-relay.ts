@@ -25,12 +25,18 @@ const GRACE_MS = Number(process.env.WEBRTC_GRACE_MS || 10000);
 // Hard cap on simultaneous decode pages, so the relay can never saturate the Pi.
 const MAX_PAGES = Number(process.env.WEBRTC_MAX_PAGES || 4);
 
+// 'keyframes' (default): only the printer's periodic keyframes (~every 0.7–1s) reach
+// the decoder; delta frames are dropped in an encoded transform before decode.
+// Measured ~3x less CPU than 'full' at full resolution, ~1–1.5 fps.
+// 'full': decode every frame (smooth video, ~1 core per 1080p camera in software).
+const DECODE_MODE = process.env.WEBRTC_DECODE === 'full' ? 'full' : 'keyframes';
+
 function relayHtml(ip: string, port: number): string {
   // Runs in headless Chromium. Posts base64 JPEGs to window.__frame(b64).
   return `<!doctype html><html><body><video id="v" autoplay playsinline muted></video>
 <canvas id="c" style="display:none"></canvas>
 <script>
-const IP=${JSON.stringify(ip)}, PORT=${port};
+const IP=${JSON.stringify(ip)}, PORT=${port}, KEYFRAMES_ONLY=${DECODE_MODE === 'keyframes'};
 const EP='http://'+IP+':'+PORT+'/call/webrtc_local';
 function munge(offer, answer){
   const offPts=((offer.match(/m=video[^\\r\\n]*/)||[''])[0]).split(' ').slice(3);
@@ -43,24 +49,37 @@ function munge(offer, answer){
 }
 (async()=>{
  try{
-  const pc=new RTCPeerConnection();
+  const useKf=KEYFRAMES_ONLY && typeof RTCRtpReceiver.prototype.createEncodedStreams==='function';
+  const pc=new RTCPeerConnection(useKf?{encodedInsertableStreams:true}:{});
   const tr=pc.addTransceiver('video',{direction:'recvonly'});
   try{const h=RTCRtpReceiver.getCapabilities('video').codecs.filter(c=>/H264/i.test(c.mimeType));if(h.length&&tr.setCodecPreferences)tr.setCodecPreferences(h);}catch(e){}
+  if(useKf){
+    // Drop delta frames before the decoder; each keyframe is self-contained.
+    const s=tr.receiver.createEncodedStreams();
+    s.readable.pipeThrough(new TransformStream({transform(f,ctl){if(f.type==='key')ctl.enqueue(f);}})).pipeTo(s.writable);
+  }
   const v=document.getElementById('v'), c=document.getElementById('c'), ctx=c.getContext('2d');
-  pc.ontrack=e=>{v.srcObject=e.streams[0];};
+  pc.ontrack=e=>{v.srcObject=e.streams[0];v.play().catch(()=>{});};
   await pc.setLocalDescription(await pc.createOffer());
   await new Promise(r=>{if(pc.iceGatheringState==='complete')return r();const f=()=>{if(pc.iceGatheringState==='complete'){pc.removeEventListener('icegatheringstatechange',f);r();}};pc.addEventListener('icegatheringstatechange',f);setTimeout(r,4000);});
   const offer=pc.localDescription.sdp;
   const resp=await fetch(EP,{method:'POST',headers:{'Content-Type':'text/plain'},body:btoa(JSON.stringify({type:'offer',sdp:offer}))});
   const ans=JSON.parse(atob(await resp.text()));
   await pc.setRemoteDescription(new RTCSessionDescription({type:'answer',sdp:munge(offer,ans.sdp)}));
-  // Capture loop (~3 fps, capped width)
+  // Timer-driven (requestVideoFrameCallback doesn't fire in background tabs, and
+  // every relay page but one is a background tab). Encode a JPEG only when the
+  // decoder has produced a new frame, so keyframe mode isn't re-encoding duplicates.
+  let lastCount=-1;
   setInterval(()=>{
     if(!v.videoWidth) return;
+    const q=v.getVideoPlaybackQuality&&v.getVideoPlaybackQuality();
+    const n=q&&q.totalVideoFrames;
+    if(n && n===lastCount) return;
+    lastCount=n||-1;
     const w=Math.min(800, v.videoWidth), h=Math.round(w*v.videoHeight/v.videoWidth);
     if(c.width!==w){c.width=w;c.height=h;}
     try{ ctx.drawImage(v,0,0,w,h); const d=c.toDataURL('image/jpeg',0.6); if(window.__frame) window.__frame(d.slice(d.indexOf(',')+1)); }catch(e){}
-  }, 330);
+  }, 300);
  }catch(e){ if(window.__err) window.__err(String(e&&e.message||e)); }
 })();
 </script></body></html>`;
@@ -91,7 +110,10 @@ export class WebrtcRelay {
         executablePath: CHROME,
         headless: true,
         args: ['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu',
-               '--autoplay-policy=no-user-gesture-required', '--disable-features=WebRtcHideLocalIpsWithMdns'],
+               '--autoplay-policy=no-user-gesture-required', '--disable-features=WebRtcHideLocalIpsWithMdns',
+               // Every relay page but one is a background tab; don't throttle them.
+               '--disable-background-timer-throttling', '--disable-renderer-backgrounding',
+               '--disable-backgrounding-occluded-windows'],
       }).then(b => { this.browser = b; b.on('disconnected', () => { this.browser = undefined; this.pages.clear(); }); return b; })
         .catch(e => { this.launching = undefined; throw e; });
     }
