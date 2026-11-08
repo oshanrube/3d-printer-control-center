@@ -111,6 +111,16 @@ class KlipperDashboard {
         return `/api/proxy/${host}:${port}/call/webrtc_local`;
     }
 
+    // Route the Moonraker WebSocket through the Pi's Caddy proxy. The Pi is wired on
+    // the main LAN and can reach every printer — including ones on an isolated IoT
+    // SSID that the viewing device (phone) can't reach directly. So the browser only
+    // needs to reach the Pi; the Pi bridges to Moonraker.
+    moonrakerWsUrl(printer) {
+        const host = this.getHostFromIp(printer.ip);
+        const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
+        return `${scheme}://${location.host}/api/proxy/${host}:7125/websocket`;
+    }
+
     waitForIceGathering(pc) {
         return new Promise(resolve => {
             if (pc.iceGatheringState === 'complete') return resolve();
@@ -148,12 +158,13 @@ class KlipperDashboard {
         return out.filter(x => x !== '').join('\r\n') + '\r\n';
     }
 
-    // Single-frame JPEG snapshot endpoints. We poll these instead of using an
-    // MJPEG multipart stream, because iOS/Safari cannot render MJPEG in an <img>.
+    // Single-frame JPEG snapshot endpoints, routed through the Pi's Caddy proxy
+    // (same reason as the WebSocket: the Pi can reach isolated IoT-SSID printers
+    // the phone can't). Polled instead of MJPEG stream for cross-browser support.
     snapshotCandidates(printer) {
         const h = this.getHostFromIp(printer.ip);
-        const list = [`http://${h}:4408/webcam/?action=snapshot`,
-                      `http://${h}:8080/?action=snapshot`];
+        const list = [`/api/proxy/${h}:4408/webcam/?action=snapshot`,
+                      `/api/proxy/${h}:8080/?action=snapshot`];
         if (printer.snapshotUrl) list.unshift(printer.snapshotUrl);
         return list;
     }
@@ -993,9 +1004,8 @@ class KlipperDashboard {
             return;
         }
 
-        const host = this.getHostFromIp(printer.ip);
-        const wsUrl = `ws://${host}:7125/websocket`;
-        
+        const wsUrl = this.moonrakerWsUrl(printer);
+
         try {
             const ws = new WebSocket(wsUrl);
             
