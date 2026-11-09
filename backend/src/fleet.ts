@@ -163,6 +163,18 @@ export class Fleet extends EventEmitter {
     if (e) this.emit('state', e.state);
   }
 
+  /**
+   * Switch a printer's light. Prefers Creality's own service so the touch screen
+   * stays in sync; falls back to Klipper's SET_PIN when that feed isn't connected.
+   */
+  async setLight(id: number, on: boolean): Promise<'creality' | 'klipper'> {
+    const e = this.entries.get(id);
+    if (!e) throw new Error('unknown printer');
+    if (e.vendor.setLight(on)) return 'creality';
+    await e.client.gcode(`SET_PIN PIN=LED VALUE=${on ? 1 : 0}`);
+    return 'klipper';
+  }
+
   /** Instantaneous hotend/motion readings for the dataset (jam-detection research). */
   sample(id: number): { extruderPower: number | null; extruderVelocity: number | null; z: number | null; fan0: number | null } | null {
     const c = this.entries.get(id)?.cache;

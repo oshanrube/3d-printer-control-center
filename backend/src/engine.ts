@@ -24,6 +24,7 @@ interface Track {
   heatOffFailed?: boolean;
   vendorBusySince?: number;     // firmware pre-print phase started (Klipper not printing yet)
   idleOnSince?: Record<string, number>; // light/fan -> when it was first seen on while idle
+  lightOnDone?: boolean;        // light already handled for the current print / preparation
   acc?: { n: number; power: number; nPower: number; vel: number; nVel: number; z: number | null; fan0: number | null };
   inPrint?: boolean;            // we've seen this print running (printing/paused)
   lastKlipperError?: string;    // last Klipper error already alerted
@@ -211,14 +212,29 @@ export class Engine {
    * pin). Automatic hotend/chamber fans are never touched.
    */
   private checkIdlePeripherals(s: LiveState) {
-    if (config.idleOffMin <= 0) return;
     const t = this.track(s.printerId);
-    const on = t.idleOnSince ??= {};
     const now = Date.now();
     const preprintActive = !!s.vendorBusy && s.state !== 'printing'
       && (!t.vendorBusySince || now - t.vendorBusySince < MAX_PREPRINT_MS);
     const idle = s.online && s.state !== 'printing' && s.state !== 'paused' && !preprintActive;
     const p = s.peripherals || {};
+
+    // Light on when a print starts or the firmware starts preparing one: the AI
+    // detector and Creality's own pre-print bed check both need it. Once per
+    // print, so switching it off mid-print by hand is respected.
+    if (idle) t.lightOnDone = false;
+    else if (s.online && config.lightOnPrint && !t.lightOnDone && p.light !== undefined) {
+      t.lightOnDone = true;
+      if (!(p.light > 0)) {
+        const name = this.printerName(s.printerId);
+        this.fleet.setLight(s.printerId, true)
+          .then(via => console.log(`[engine] ${name}: light switched on for the print (via ${via})`))
+          .catch((e: any) => { t.lightOnDone = false; console.warn(`[engine] couldn't switch on the light on ${name}: ${e?.message || e}`); });
+      }
+    }
+
+    if (config.idleOffMin <= 0) return;
+    const on = t.idleOnSince ??= {};
     const due: string[] = [];
     for (const key of ['light', 'fan0', 'fan1', 'fan2'] as const) {
       if (!idle || !((p[key] ?? 0) > 0)) { delete on[key]; continue; }
@@ -229,11 +245,16 @@ export class Engine {
     for (const k of due) on[k] = now;   // if it's still on afterwards, try again one interval later
     const client = this.fleet.client(s.printerId);
     if (!client) return;
-    const script = due.map(k => (k === 'light' ? 'SET_PIN PIN=LED VALUE=0' : `M107 P${k.slice(3)}`)).join('\n');
-    const what = [due.includes('light') ? 'the light' : '', ...due.filter(k => k !== 'light').map(k => FAN_NAMES[k])]
+    // Light through Creality's service (keeps the touch screen in sync); fans via
+    // Creality's M107 macro (the screen already tracks fan state correctly).
+    const fans = due.filter(k => k !== 'light');
+    const what = [due.includes('light') ? 'the light' : '', ...fans.map(k => FAN_NAMES[k])]
       .filter(Boolean).join(' and ').replace(/ and (?=.* and )/g, ', ');
     const name = this.printerName(s.printerId);
-    client.gcode(script)
+    Promise.all([
+      due.includes('light') ? this.fleet.setLight(s.printerId, false) : null,
+      fans.length ? client.gcode(fans.map(k => `M107 P${k.slice(3)}`).join('\n')) : null,
+    ])
       .then(() => this.emit({ printerId: s.printerId, printerName: name, type: 'idle_off', severity: 'info',
         title: `💡 ${name}: switched off ${what}`, message: `Nothing has been printing for ${config.idleOffMin}+ min, so ${what} ${due.length > 1 ? 'were' : 'was'} switched off.`,
         filename: null, actionTaken: 'switched off' }))

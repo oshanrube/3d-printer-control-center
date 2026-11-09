@@ -8,8 +8,10 @@ import type { Printer } from './types.js';
  * codes (e.g. 521 "AI detected objects on the bed") and the firmware's pre-print
  * phase (heating, self-test, levelling) before a job is ever handed to Klipper.
  *
- * The first message is a full snapshot; later messages are deltas. We never send
- * anything, so this can't interfere with the printer or the Creality app.
+ * The first message is a full snapshot; later messages are deltas. The only thing
+ * we ever send is the light switch (setLight): switching the LED through this
+ * service, as the Creality app does, keeps the touch screen in sync. Switching it
+ * via Klipper's SET_PIN works but leaves the screen showing the old state.
  */
 
 export interface CrealityFault { code: number; errcode: number; message: string; }
@@ -43,6 +45,13 @@ export class CrealityClient extends EventEmitter {
   status: VendorStatus | null = null;   // null = feed not connected / unknown
 
   constructor(public printer: Printer) { super(); }
+
+  /** Switch the chamber light through Creality's service. False if the feed isn't connected. */
+  setLight(on: boolean): boolean {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return false;
+    this.ws.send(JSON.stringify({ method: 'set', params: { lightSw: on ? 1 : 0 } }));
+    return true;
+  }
 
   private host() { return String(this.printer.ip).replace(/^https?:\/\//, '').split(':')[0]; }
 
