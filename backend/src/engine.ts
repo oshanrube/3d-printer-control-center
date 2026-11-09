@@ -43,7 +43,7 @@ const MAX_PREPRINT_MS = 60 * 60_000;
 const PUSH_FOR: Partial<Record<EventType, boolean>> = {
   print_finished: true, print_cancelled: true, filament_runout: true,
   klipper_error: true, printer_offline: true, stall_suspected: true,
-  printer_fault: true, heaters_idle: true, heaters_off: true, ai_failure: true, jam_suspected: true,
+  printer_fault: true, heaters_idle: true, heaters_off: true, ai_failure: true, jam_suspected: true, reference_mismatch: true,
 };
 
 export class Engine {

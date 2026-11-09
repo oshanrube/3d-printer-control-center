@@ -7,6 +7,7 @@ import type { WebSocket } from 'ws';
 import { config } from './config.js';
 import { printersRepo, eventsRepo, printsRepo, aiRepo } from './db.js';
 import type { AiAnalyzer } from './ai-analyzer.js';
+import type { RefComparer } from './ref-compare.js';
 import { getPublicKey, subscribe, unsubscribe, sendPush } from './push.js';
 import { fetchSnapshot } from './camera.js';
 import { scanSubnet } from './scan.js';
@@ -21,7 +22,7 @@ const STATE_MIN_INTERVAL_MS = 1000;
 // Failure labels the user can give a stopped (or bad completed) print.
 export const FAILURE_REASONS = ['spaghetti', 'jam', 'layer_shift', 'warping', 'adhesion', 'wrong_file', 'not_failed', 'other'];
 
-export function buildServer(fleet: Fleet, ai: { current?: AiAnalyzer } = {}) {
+export function buildServer(fleet: Fleet, ai: { current?: AiAnalyzer } = {}, ref: { current?: RefComparer } = {}) {
   const app = Fastify({ logger: false });
   app.register(fastifyWebsocket);
 
@@ -34,7 +35,7 @@ export function buildServer(fleet: Fleet, ai: { current?: AiAnalyzer } = {}) {
   // once per second per printer. Changes that matter are sent immediately.
   const lastSent = new Map<number, { at: number; key: string }>();
   const pending = new Map<number, NodeJS.Timeout>();
-  const keyOf = (s: LiveState) => [s.online, s.state, s.fault?.code ?? '', s.errorText ?? '', s.filename ?? '', s.ai?.assessment ?? ''].join('|');
+  const keyOf = (s: LiveState) => [s.online, s.state, s.fault?.code ?? '', s.errorText ?? '', s.filename ?? '', s.ai?.assessment ?? '', s.reference?.ok ?? ''].join('|');
   const sendState = (s: LiveState) => {
     lastSent.set(s.printerId, { at: Date.now(), key: keyOf(s) });
     broadcast({ type: 'state', state: s });
@@ -149,6 +150,14 @@ export function buildServer(fleet: Fleet, ai: { current?: AiAnalyzer } = {}) {
     broadcast({ type: 'labels' });   // dashboards refresh their "to label" lists
     return { ok: true };
   });
+  // The good run's frame at this printer's current step (the Compare view).
+  app.get('/api/printers/:id/reference-frame', async (req, reply) => {
+    const path = ref.current?.referenceFrame(Number((req.params as any).id));
+    if (!path || !existsSync(path)) return reply.code(404).send();
+    reply.header('Content-Type', 'image/jpeg').header('Cache-Control', 'no-store');
+    return reply.send(readFileSync(path));
+  });
+  app.get('/api/printers/:id/reference-debug', async (req) => ref.current?.explain(Number((req.params as any).id)) ?? { error: 'reference comparison off' });
   // The print's last saved camera frame, to help remember what happened.
   app.get('/api/prints/:id/last-frame', async (req, reply) => {
     const p = printsRepo.get(Number((req.params as any).id));

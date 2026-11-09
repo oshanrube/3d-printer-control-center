@@ -7,6 +7,7 @@ import { buildServer } from './server.js';
 import { relay } from './webrtc-relay.js';
 import { AiAnalyzer } from './ai-analyzer.js';
 import { JamDetector } from './jam-detector.js';
+import { RefComparer } from './ref-compare.js';
 
 function seedIfEmpty() {
   if (printersRepo.all().length > 0) return;
@@ -32,7 +33,8 @@ async function main() {
 
   const fleet = new Fleet();
   const aiRef: { current?: AiAnalyzer } = {};
-  const { app, broadcastEvent } = buildServer(fleet, aiRef);
+  const refRef: { current?: RefComparer } = {};
+  const { app, broadcastEvent } = buildServer(fleet, aiRef, refRef);
   const engine = new Engine(fleet, broadcastEvent);
   engine.start();
   fleet.start();
@@ -40,6 +42,8 @@ async function main() {
   aiRef.current.start();
   const jam = new JamDetector(fleet, e => engine.report(e));
   if (config.jamDetection) jam.start();
+  refRef.current = new RefComparer(fleet, e => engine.report(e));
+  if (config.referenceCompare) refRef.current.start();
 
   await app.listen({ host: config.host, port: config.port });
   console.log(`[server] listening on http://${config.host}:${config.port}`);
@@ -49,6 +53,7 @@ async function main() {
     fleet.stop();
     aiRef.current?.stop();
     jam.stop();
+    refRef.current?.stop();
     try { await relay.stop(); } catch { /* ignore */ }
     try { await app.close(); } catch { /* ignore */ }
     process.exit(0);

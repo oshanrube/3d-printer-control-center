@@ -3,7 +3,7 @@ import { MoonrakerClient } from './moonraker.js';
 import { CrealityClient, describeFault } from './creality.js';
 import { describeKlipperError } from './errors.js';
 import { printersRepo } from './db.js';
-import type { AiVerdict, LiveState, Printer, PrintState } from './types.js';
+import type { AiVerdict, LiveState, Printer, PrintState, RefVerdict } from './types.js';
 
 function deepMerge(target: any, source: any): any {
   if (source == null || typeof source !== 'object') return source;
@@ -62,6 +62,7 @@ interface Entry {
   client: MoonrakerClient;
   vendor: CrealityClient; // Creality firmware feed (:9999): faults + pre-print phase
   ai?: AiVerdict | null;  // latest vision-model verdict (set by ai-analyzer)
+  reference?: RefVerdict | null; // latest reference-run comparison (set by ref-compare)
   cache: any;           // merged Moonraker status objects
   state: LiveState;
 }
@@ -159,6 +160,7 @@ export class Fleet extends EventEmitter {
       filamentDetected,
       ...this.vendorFields(entry),
       ai: entry.ai ?? null,
+      reference: entry.reference ?? null,
       peripherals: peripheralsFrom(c),
       ...environmentFrom(c),
       updatedAt: Date.now(),
@@ -215,6 +217,15 @@ export class Fleet extends EventEmitter {
       z: num(c.motion_report?.live_position?.[2]),
       fan0: num(c['output_pin fan0']?.value),
     };
+  }
+
+  /** Attach the latest reference-run comparison to a printer's live state. */
+  setReference(id: number, verdict: RefVerdict | null) {
+    const e = this.entries.get(id);
+    if (!e) return;
+    e.reference = verdict;
+    e.state = { ...e.state, reference: verdict, updatedAt: Date.now() };
+    this.emitState(id);
   }
 
   /** Attach the latest AI verdict to a printer's live state (pushed to dashboards). */

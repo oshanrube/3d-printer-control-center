@@ -46,7 +46,7 @@ const stateLabel: Record<string, string> = {
 const evIcon: Record<string, string> = {
   print_finished: '✅', print_cancelled: '🛑', filament_runout: '🧵', klipper_error: '⚠️',
   printer_offline: '📴', printer_online: '🔌', stall_suspected: '⏳', print_started: '▶️', paused: '⏸️', info: 'ℹ️',
-  printer_fault: '⚠️', fault_cleared: '✔️', heaters_idle: '🔥', heaters_off: '🧯', ai_failure: '🤖', idle_off: '💡', jam_suspected: '🧵',
+  printer_fault: '⚠️', fault_cleared: '✔️', heaters_idle: '🔥', heaters_off: '🧯', ai_failure: '🤖', idle_off: '💡', jam_suspected: '🧵', reference_mismatch: '📐',
 };
 
 /* ---------- camera (snapshot polling via backend) ---------- */
@@ -100,6 +100,7 @@ function PrinterCard({ printer, onEdit, toLabel, onLabelled, onLater }: {
 }) {
   const s = printer.live;
   const st = s?.state || 'offline';
+  const [showRef, setShowRef] = useState(false);
   const busy = useRef(false);
   const act = async (a: 'pause' | 'resume' | 'cancel') => {
     if (busy.current) return; busy.current = true;
@@ -150,7 +151,20 @@ function PrinterCard({ printer, onEdit, toLabel, onLabelled, onLater }: {
       {toLabel && st !== 'printing' && st !== 'paused' && (
         <LabelPrompt print={toLabel} onDone={onLabelled} onLater={() => onLater(toLabel.id)} />
       )}
+      {s?.reference && (st === 'printing' || st === 'paused') && (
+        <div class={`ref-line ${s.reference.ok ? 'ok' : 'bad'}`}>
+          📐 {s.reference.ok ? 'Matches' : 'Differs from'} a good run {s.reference.samePrinter ? 'on this printer' : `on ${s.reference.refPrinterName}`}
+          {' '}<span class="muted">(diff {s.reference.score} / {s.reference.limit})</span>
+          <button class="chip" style="margin-left:6px" onClick={() => setShowRef(!showRef)}>{showRef ? 'Hide' : 'Compare'}</button>
+        </div>
+      )}
       <Camera printer={printer} />
+      {showRef && s?.reference && (
+        <div class="ref-view">
+          <div class="muted">Good run {s.reference.samePrinter ? '(this printer)' : `on ${s.reference.refPrinterName}`} at the same step:</div>
+          <img src={api.referenceFrameUrl(printer.id, s.reference.at)} alt="reference frame" />
+        </div>
+      )}
       {s?.online && (st === 'printing' || st === 'paused') && (
         <div class="actions">
           {st === 'printing'

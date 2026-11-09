@@ -31,6 +31,8 @@ export const config = {
   lightOnPrint: (process.env.LIGHT_ON_PRINT ?? '1') === '1',
   // "Possible jam / printing in air" warnings from hotend heater power (jam-detector.ts).
   jamDetection: (process.env.JAM_DETECTION ?? '1') === '1',
+  // Compare each print with a good run of the same file at the same step (ref-compare.ts).
+  referenceCompare: (process.env.REFERENCE_COMPARE ?? '1') === '1',
 
   // Stage 1 failure detection: Obico's open-source failure detector (ml_api) on bc250.
   // Hyperparameters are Obico's own (FD_1ST_GEN_PARAMS), tuned for one frame per 10 s.

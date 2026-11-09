@@ -155,3 +155,10 @@ main{margin-top:16px}
 .chip:disabled { opacity: .5; cursor: default; }
 .label-row { padding: 10px 0; border-top: 1px solid var(--border); }
 .push-res { font-size: 11px; color: var(--text-faint); margin-top: 2px; }
+
+/* Reference-run comparison */
+.ref-line { margin-top: 8px; font-size: 13px; display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
+.ref-line.ok { color: var(--st-ready); }
+.ref-line.bad { color: var(--st-offline); font-weight: 600; }
+.ref-view { margin-top: 8px; font-size: 12px; }
+.ref-view img { width: 100%; border-radius: 10px; margin-top: 4px; display: block; }

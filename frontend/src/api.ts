@@ -8,6 +8,7 @@ export interface LiveState {
   peripherals?: { light?: number; fan0?: number; fan1?: number; fan2?: number };
   chamber?: { temp: number; target?: number; heaterPower?: number } | null;
   fans?: { part?: number; chamber?: number; chamberAuto?: boolean; side?: number; hotend?: number; heater?: number };
+  reference?: { ok: boolean; score: number; limit: number; samePrinter: boolean; refPrinterName: string; refPrintId: number; at: number } | null;
   ai?: { source: 'detector' | 'vlm'; assessment: 'success' | 'failure' | 'inconclusive'; confidence: number; reason: string; defects: string[]; at: number } | null;
   updatedAt: number;
 }
@@ -76,4 +77,5 @@ export const api = {
   label: (id: number, reason: string, note?: string) =>
     j(`/api/prints/${id}/label`, { method: 'POST', body: JSON.stringify({ reason, note }) }),
   lastFrameUrl: (id: number) => `/api/prints/${id}/last-frame`,
+  referenceFrameUrl: (printerId: number, at: number) => `/api/printers/${printerId}/reference-frame?t=${at}`,
 };

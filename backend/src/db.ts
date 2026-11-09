@@ -181,6 +181,13 @@ export const eventsRepo = {
           e.filename ?? null, e.actionTaken ?? null, e.createdAt);
     return { ...e, id: Number(info.lastInsertRowid) };
   },
+  /** Time of the first failure warning on a printer within [from, to], if any. */
+  firstFailure(printerId: number, from: number, to: number): number | null {
+    const r = db.prepare(`SELECT min(created_at) AS t FROM events WHERE printer_id = ? AND created_at BETWEEN ? AND ?
+                          AND type IN ('ai_failure', 'jam_suspected', 'reference_mismatch', 'klipper_error', 'filament_runout')`)
+      .get(printerId, from, to) as any;
+    return r?.t ?? null;
+  },
   setPushResult(id: number, result: string) {
     db.prepare('UPDATE events SET push_result = ? WHERE id = ?').run(result.slice(0, 500), id);
   },
@@ -306,6 +313,25 @@ export const printsRepo = {
   get(id: number): { id: number; snapshot_dir: string | null } | undefined {
     return db.prepare('SELECT id, snapshot_dir FROM prints WHERE id = ?').get(id) as any;
   },
+  /** Every row printed from a file, in order (for building reference runs). */
+  byFile(filename: string): { id: number; printer_id: number; outcome: string | null; failure_reason: string | null; started_at: number; ended_at: number | null }[] {
+    return db.prepare(`SELECT id, printer_id, outcome, failure_reason, started_at, ended_at FROM prints
+                       WHERE filename = ? ORDER BY printer_id, id`).all(filename) as any;
+  },
+  /** Saved frames (progress + absolute-ish path parts) of the given print rows, oldest first. */
+  frames(printIds: number[]): { t: number; progress: number; dir: string; file: string }[] {
+    if (!printIds.length) return [];
+    return db.prepare(`SELECT t.t, t.progress, p.snapshot_dir AS dir, t.snapshot AS file FROM telemetry t JOIN prints p ON p.id = t.print_id
+                       WHERE t.print_id IN (${printIds.map(() => '?').join(',')}) AND t.snapshot IS NOT NULL AND t.progress IS NOT NULL
+                       ORDER BY t.t`).all(...printIds) as any;
+  },
+  /** Progress of a run at time t (last telemetry row at or before t). */
+  progressAt(printIds: number[], t: number): number | null {
+    if (!printIds.length) return null;
+    const r = db.prepare(`SELECT progress FROM telemetry WHERE print_id IN (${printIds.map(() => '?').join(',')}) AND t <= ?
+                          ORDER BY t DESC LIMIT 1`).get(...printIds, t) as any;
+    return r?.progress ?? null;
+  },
   /** Heater power / target / part fan rows of a print since `t` (jam detection). */
   powerSince(printId: number, t: number): { t: number; power: number | null; target: number | null; fan0: number | null }[] {
     return db.prepare(`SELECT t, extruder_power AS power, extruder_target AS target, fan0 FROM telemetry
@@ -321,7 +347,7 @@ export const printsRepo = {
 // ---- AI verdicts ----
 export interface AiCheck {
   printerId: number; printId: number | null; t: number; snapshot: string | null;
-  source: 'detector' | 'vlm';
+  source: 'detector' | 'vlm' | 'reference';
   assessment: string; confidence: number | null; reason: string | null; defects: string[];
   progress: number | null; model: string | null; latencyMs: number | null; raw: string | null;
   score?: number | null; risk?: number | null;

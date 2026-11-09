@@ -20,6 +20,17 @@ export interface AiVerdict {
   at: number;                 // epoch ms
 }
 
+/** Comparison with a good run of the same file at the same step (ref-compare.ts). */
+export interface RefVerdict {
+  ok: boolean;
+  score: number;              // mean abs difference of normalised frames (lower = more alike)
+  limit: number;              // threshold used (same printer 0.20, other printer 0.33)
+  samePrinter: boolean;
+  refPrinterName: string;
+  refPrintId: number;
+  at: number;
+}
+
 // Normalized live state we derive from Moonraker objects.
 export type PrintState =
   | 'offline'
@@ -51,6 +62,7 @@ export interface LiveState {
   vendorBusy?: boolean;       // firmware is running a job Klipper can't see yet (pre-print heat/level)
   errorText?: string;         // readable Klipper error (when state === 'error')
   ai?: AiVerdict | null;      // latest vision-model check of this printer's camera (during prints)
+  reference?: RefVerdict | null; // latest comparison with a good run of the same file
   // Light and switchable fans, 0-1 (only those the printer has). Automatic fans excluded.
   peripherals?: { light?: number; fan0?: number; fan1?: number; fan2?: number };
   // Chamber, for display. target/heaterPower only on printers with a chamber heater (K2).
@@ -76,6 +88,7 @@ export type EventType =
   | 'heaters_off'
   | 'ai_failure'
   | 'jam_suspected'
+  | 'reference_mismatch'
   | 'idle_off'
   | 'paused'
   | 'resumed'
