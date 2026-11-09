@@ -33,7 +33,8 @@ interface Track {
 
 const FAULT_SETTLE_MS = 5000;
 
-const FAN_NAMES: Record<string, string> = { fan0: 'the part-cooling fan', fan1: 'the side fan', fan2: 'the chamber fan' };
+// fan1 shares its pin with the automatic chamber fan; fan2 is the side (auxiliary) fan.
+const FAN_NAMES: Record<string, string> = { fan0: 'the part-cooling fan', fan1: 'the chamber fan', fan2: 'the side fan' };
 
 // The firmware's pre-print phase (heat, self-test, levelling) never legitimately runs
 // this long; past it, a "busy" firmware with no print is treated as stuck.

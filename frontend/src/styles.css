@@ -133,7 +133,10 @@ main{margin-top:16px}
 
 /* AI verdict line on printer cards */
 .ai-line { margin-top: 8px; font-size: 13px; }
-.ai-line.ai-success { color: var(--st-printing); }
+.ai-line.ai-success { color: var(--st-ready); }
 .ai-line.ai-inconclusive { color: var(--st-paused); }
 .ai-line.ai-failure { color: var(--st-offline); font-weight: 600; }
 .ai-line .ai-reason { font-weight: 400; margin-top: 2px; opacity: .9; }
+
+/* Fan speeds line under the stats grid */
+.fan-line { margin-top: 8px; font-size: 12px; color: var(--text-dim); font-variant-numeric: tabular-nums; line-height: 1.4; }

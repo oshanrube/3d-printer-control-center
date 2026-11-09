@@ -23,6 +23,29 @@ function peripheralsFrom(c: any): LiveState['peripherals'] {
   return out;
 }
 
+function environmentFrom(c: any): Pick<LiveState, 'chamber' | 'fans'> {
+  const num = (v: any) => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
+  const r1 = (v: number | undefined) => (v === undefined ? undefined : Math.round(v * 10) / 10);
+  const heater = c['heater_generic chamber_heater'];
+  const temp = num(c['temperature_sensor chamber_temp']?.temperature) ?? num(heater?.temperature);
+  const chamber = temp === undefined ? null : {
+    temp: r1(temp)!,
+    ...(heater ? { target: num(heater.target) ?? 0, heaterPower: num(heater.power) ?? 0 } : {}),
+  };
+  const manual = num(c['output_pin fan1']?.value);
+  const auto = num(c['temperature_fan chamber_fan']?.speed);
+  const fans: NonNullable<LiveState['fans']> = {};
+  if (num(c['output_pin fan0']?.value) !== undefined) fans.part = num(c['output_pin fan0'].value);
+  if (manual !== undefined || auto !== undefined) {
+    fans.chamber = Math.max(manual ?? 0, auto ?? 0);
+    fans.chamberAuto = (auto ?? 0) > (manual ?? 0);
+  }
+  if (num(c['output_pin fan2']?.value) !== undefined) fans.side = num(c['output_pin fan2'].value);
+  if (num(c['heater_fan hotend_fan']?.speed) !== undefined) fans.hotend = num(c['heater_fan hotend_fan'].speed);
+  if (num(c['heater_fan chamber_fan']?.speed) !== undefined) fans.heater = num(c['heater_fan chamber_fan'].speed);
+  return { chamber, fans };
+}
+
 function mapState(klippyPrintState: string | undefined, online: boolean): PrintState {
   if (!online) return 'offline';
   switch (klippyPrintState) {
@@ -137,6 +160,7 @@ export class Fleet extends EventEmitter {
       ...this.vendorFields(entry),
       ai: entry.ai ?? null,
       peripherals: peripheralsFrom(c),
+      ...environmentFrom(c),
       updatedAt: Date.now(),
     };
     if (next.state === 'error' && next.stateMessage) {

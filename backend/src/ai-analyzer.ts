@@ -152,12 +152,25 @@ export class AiAnalyzer {
     } catch (e: any) { this.fail(this.status.detector, 'detector', `unreachable: ${e?.message || e}`); }
   }
 
+  private save(id: number, t: Track) {
+    try { kv.set(`fd:${id}`, JSON.stringify({ ...t.pred, printKey: t.printKey, level: t.level })); } catch { /* best effort */ }
+  }
+
   private track(id: number): Track {
     let t = this.tracks.get(id);
     if (!t) {
-      let pred = newPrediction();
-      try { const saved = kv.get(`fd:${id}`); if (saved) pred = { ...pred, ...JSON.parse(saved) }; } catch { /* fresh */ }
-      t = { inFlight: false, lastRun: 0, pred, level: 'none', lastRowAt: 0 };
+      // Restore the prediction *and* which print it belongs to (and whether we already
+      // alerted), so a backend restart mid-print doesn't restart Obico's 30-frame
+      // learning window or re-send an alert.
+      const pred = newPrediction();
+      let printKey: string | undefined; let level: Track['level'] = 'none';
+      try {
+        const saved = JSON.parse(kv.get(`fd:${id}`) || '{}');
+        for (const k of Object.keys(pred) as (keyof Prediction)[]) if (typeof saved[k] === 'number') pred[k] = saved[k];
+        if (typeof saved.printKey === 'string') printKey = saved.printKey;
+        if (saved.level === 'warning' || saved.level === 'failure') level = saved.level;
+      } catch { /* fresh */ }
+      t = { inFlight: false, lastRun: 0, pred, printKey, level, lastRowAt: 0 };
       this.tracks.set(id, t);
     }
     return t;
@@ -205,7 +218,7 @@ export class AiAnalyzer {
     this.status.detector.checks++; this.status.detector.lastOkAt = Date.now();
 
     updatePrediction(t.pred, detections);
-    try { kv.set(`fd:${s.printerId}`, JSON.stringify(t.pred)); } catch { /* best effort */ }
+    this.save(s.printerId, t);
     const sens = config.detector.sensitivity;
     const risk = normalizedRisk(t.pred, sens);
     const shown = detections.filter(d => d[1] > FD.VISUALIZATION_THRESH);
@@ -240,8 +253,8 @@ export class AiAnalyzer {
     // Decisions, exactly as Obico: pause level first, else alert level. Each once per print.
     const failure = isFailing(t.pred, sens, FD.ESCALATING_FACTOR);
     const warning = !failure && isFailing(t.pred, sens, 1);
-    if (failure && t.level !== 'failure') { t.level = 'failure'; await this.alarm(s, 'failure', shot.body, risk); }
-    else if (warning && t.level === 'none') { t.level = 'warning'; await this.alarm(s, 'warning', shot.body, risk); }
+    if (failure && t.level !== 'failure') { t.level = 'failure'; this.save(s.printerId, t); await this.alarm(s, 'failure', shot.body, risk); }
+    else if (warning && t.level === 'none') { t.level = 'warning'; this.save(s.printerId, t); await this.alarm(s, 'warning', shot.body, risk); }
   }
 
   private callDetector(imgUrl: string): Promise<Detection[]> {

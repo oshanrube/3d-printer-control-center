@@ -5,6 +5,9 @@ export interface LiveState {
   extruderTemp: number; extruderTarget: number; filamentDetected?: boolean | null;
   fault?: { code: number; message: string; description: string } | null; vendorBusy?: boolean;
   errorText?: string;
+  peripherals?: { light?: number; fan0?: number; fan1?: number; fan2?: number };
+  chamber?: { temp: number; target?: number; heaterPower?: number } | null;
+  fans?: { part?: number; chamber?: number; chamberAuto?: boolean; side?: number; hotend?: number; heater?: number };
   ai?: { source: 'detector' | 'vlm'; assessment: 'success' | 'failure' | 'inconclusive'; confidence: number; reason: string; defects: string[]; at: number } | null;
   updatedAt: number;
 }

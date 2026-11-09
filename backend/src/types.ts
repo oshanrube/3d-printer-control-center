@@ -53,6 +53,11 @@ export interface LiveState {
   ai?: AiVerdict | null;      // latest vision-model check of this printer's camera (during prints)
   // Light and switchable fans, 0-1 (only those the printer has). Automatic fans excluded.
   peripherals?: { light?: number; fan0?: number; fan1?: number; fan2?: number };
+  // Chamber, for display. target/heaterPower only on printers with a chamber heater (K2).
+  chamber?: { temp: number; target?: number; heaterPower?: number } | null;
+  // Fan speeds 0-1, for display. chamber = effective speed of the chamber fan (manual
+  // fan1 or the automatic temperature_fan, which share a pin); chamberAuto = automatic.
+  fans?: { part?: number; chamber?: number; chamberAuto?: boolean; side?: number; hotend?: number; heater?: number };
   updatedAt: number;
 }
 

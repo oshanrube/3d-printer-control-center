@@ -15,6 +15,8 @@ import { describeKlipperError } from './errors.js';
 
 // How long a pause/resume/cancel request waits for the printer before answering "accepted".
 const ACTION_QUICK_MS = 3000;
+// Minimum gap between live-state pushes per printer to dashboards (important changes bypass it).
+const STATE_MIN_INTERVAL_MS = 1000;
 
 export function buildServer(fleet: Fleet, ai: { current?: AiAnalyzer } = {}) {
   const app = Fastify({ logger: false });
@@ -24,8 +26,29 @@ export function buildServer(fleet: Fleet, ai: { current?: AiAnalyzer } = {}) {
   const send = (sock: WebSocket, obj: any) => { try { sock.send(JSON.stringify(obj)); } catch { /* ignore */ } };
   const broadcast = (obj: any) => { for (const c of clients) send(c, obj); };
 
-  // Live state updates -> all ws clients
-  fleet.on('state', (s: LiveState) => broadcast({ type: 'state', state: s }));
+  // Live state updates -> all ws clients. Moonraker reports ~4 updates/s per printer
+  // (temperature noise); dashboards only need ~1/s, so coalesce to the latest state
+  // once per second per printer. Changes that matter are sent immediately.
+  const lastSent = new Map<number, { at: number; key: string }>();
+  const pending = new Map<number, NodeJS.Timeout>();
+  const keyOf = (s: LiveState) => [s.online, s.state, s.fault?.code ?? '', s.errorText ?? '', s.filename ?? '', s.ai?.assessment ?? ''].join('|');
+  const sendState = (s: LiveState) => {
+    lastSent.set(s.printerId, { at: Date.now(), key: keyOf(s) });
+    broadcast({ type: 'state', state: s });
+  };
+  fleet.on('state', (s: LiveState) => {
+    const id = s.printerId, prev = lastSent.get(id), now = Date.now();
+    if (!prev || prev.key !== keyOf(s) || now - prev.at >= STATE_MIN_INTERVAL_MS) {
+      clearTimeout(pending.get(id)); pending.delete(id);
+      sendState(s);
+    } else if (!pending.has(id)) {
+      pending.set(id, setTimeout(() => {
+        pending.delete(id);
+        const latest = fleet.getState(id);
+        if (latest) sendState(latest);
+      }, STATE_MIN_INTERVAL_MS - (now - prev.at)));
+    }
+  });
   // Engine events are forwarded here via broadcastEvent()
   const broadcastEvent = (e: PrinterEvent) => broadcast({ type: 'event', event: e });
 

@@ -15,6 +15,23 @@ function fmtETA(sec?: number | null) {
   const d = new Date(Date.now() + sec * 1000);
   return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
+type LiveFans = NonNullable<NonNullable<Printer['live']>['fans']>;
+function fmtChamber(c?: { temp: number; target?: number; heaterPower?: number } | null) {
+  if (!c) return '—';
+  if (c.target === undefined) return `${c.temp}°`;                        // no chamber heater (K1C)
+  const heating = (c.heaterPower ?? 0) > 0.05 ? ' 🔥' : '';
+  return c.target > 0 ? `${c.temp}° / ${c.target}°${heating}` : `${c.temp}°`;
+}
+function fmtFans(f: LiveFans) {
+  const pct = (v?: number) => (v === undefined ? null : v > 0.005 ? `${Math.round(v * 100)}%` : 'off');
+  const parts: string[] = [];
+  if (f.part !== undefined) parts.push(`Part ${pct(f.part)}`);
+  if (f.chamber !== undefined) parts.push(`Chamber ${pct(f.chamber)}${f.chamberAuto && f.chamber > 0.005 ? ' (auto)' : ''}`);
+  if (f.side !== undefined) parts.push(`Side ${pct(f.side)}`);
+  if (f.hotend !== undefined) parts.push(`Hotend ${f.hotend > 0.005 ? 'on' : 'off'}`);
+  if (f.heater !== undefined) parts.push(`Heater ${pct(f.heater)}`);
+  return parts.join(' · ');
+}
 function timeAgo(ms: number) {
   const s = Math.floor((Date.now() - ms) / 1000);
   if (s < 60) return `${s}s ago`;
@@ -33,18 +50,34 @@ const evIcon: Record<string, string> = {
 };
 
 /* ---------- camera (snapshot polling via backend) ---------- */
+// The WebRTC relay produces ~1 new frame/s (keyframe mode) and MJPEG snapshots are
+// similar, so polling faster only re-downloads the same image (through Tailscale).
+const CAMERA_REFRESH_MS = 1000;
+
 function Camera({ printer }: { printer: Printer }) {
   const [src, setSrc] = useState<string>('');
   const [failed, setFailed] = useState(false);
   const live = printer.live;
   const active = !!live?.online;
+  const alive = useRef(true);
+  const timer = useRef<number | undefined>(undefined);
+
+  // Load the next frame after `delay`, but only while the page is visible:
+  // a hidden tab / locked phone pulls nothing.
+  const next = (delay: number) => {
+    window.clearTimeout(timer.current);
+    timer.current = window.setTimeout(() => {
+      if (!alive.current) return;
+      if (document.hidden) { next(CAMERA_REFRESH_MS); return; }
+      setSrc(api.snapshotUrl(printer.id) + '?t=' + Date.now());
+    }, delay);
+  };
 
   useEffect(() => {
+    alive.current = true;
     if (!active || printer.cameraType === 'none') { setSrc(''); return; }
-    let stop = false;
-    const tick = () => { if (!stop) setSrc(api.snapshotUrl(printer.id) + '?t=' + Date.now()); };
-    tick();
-    return () => { stop = true; };
+    next(0);
+    return () => { alive.current = false; window.clearTimeout(timer.current); };
   }, [active, printer.id, printer.cameraType]);
 
   if (!active || printer.cameraType === 'none') return null;
@@ -52,8 +85,8 @@ function Camera({ printer }: { printer: Printer }) {
     <div class="cam">
       {!failed && src && (
         <img src={src} alt="camera"
-          onLoad={() => { setFailed(false); setTimeout(() => setSrc(api.snapshotUrl(printer.id) + '?t=' + Date.now()), 350); }}
-          onError={() => { setFailed(true); setTimeout(() => { setFailed(false); setSrc(api.snapshotUrl(printer.id) + '?t=' + Date.now()); }, 4000); }} />
+          onLoad={() => { setFailed(false); next(CAMERA_REFRESH_MS); }}
+          onError={() => { setFailed(true); window.clearTimeout(timer.current); timer.current = window.setTimeout(() => { if (alive.current) { setFailed(false); next(0); } }, 4000); }} />
       )}
       {failed && <div class="noimg">{printer.cameraType === 'webrtc' ? 'Connecting camera…' : 'Camera unavailable'}</div>}
     </div>
@@ -93,7 +126,10 @@ function PrinterCard({ printer, onEdit }: { printer: Printer; onEdit: (p: Printe
         <div class="stat"><div class="k">🔥 Nozzle</div><div class="v">{s ? `${s.extruderTemp}° / ${s.extruderTarget}°` : '—'}</div></div>
         <div class="stat"><div class="k">⏱️ Elapsed</div><div class="v">{fmtDur(s?.printDuration)}</div></div>
         <div class="stat"><div class="k">🏁 ETA</div><div class="v">{fmtETA(s?.etaSeconds)}</div></div>
+        <div class="stat"><div class="k">🌡️ Chamber</div><div class="v">{fmtChamber(s?.chamber)}</div></div>
+        <div class="stat"><div class="k">💡 Light</div><div class="v">{s?.peripherals?.light === undefined ? '—' : s.peripherals.light > 0 ? 'On' : 'Off'}</div></div>
       </div>
+      {s?.online && s.fans && Object.keys(s.fans).length > 0 && <div class="fan-line">💨 {fmtFans(s.fans)}</div>}
       {(s?.fault || (st === 'error' && s?.errorText)) && (
         <div class="fault-banner" title={s!.fault?.message || undefined}>
           ⚠️ {s!.fault ? <b>Error {s!.fault.code}</b> : <b>Printer error</b>}: {s!.fault?.description || s!.errorText}

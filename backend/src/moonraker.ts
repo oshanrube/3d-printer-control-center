@@ -5,8 +5,17 @@ import type { Printer } from './types.js';
 // Print control macros (pause/resume/cancel) can run for minutes before Moonraker replies.
 const ACTION_TIMEOUT_MS = 10 * 60_000;
 
-// Light + switchable fans on Creality K1/K1C/K2 (fan0 part cooling, fan1 side, fan2 chamber/exhaust).
+// Light + switchable fans on Creality K1/K1C/K2. fan0 = part cooling, fan1 = chamber
+// (exhaust) fan, fan2 = side (auxiliary) fan. fan1 shares its pin with the automatic
+// `temperature_fan chamber_fan`, so the same physical fan is driven by either.
 export const PERIPHERAL_OBJECTS = ['output_pin LED', 'output_pin fan0', 'output_pin fan1', 'output_pin fan2'];
+
+// Chamber + automatic fans, for display. chamber_temp is the reliable chamber reading
+// (the temperature_fan reads the same thermistor with a different table on the K1C).
+export const ENV_OBJECTS = [
+  'temperature_sensor chamber_temp', 'heater_generic chamber_heater',
+  'temperature_fan chamber_fan', 'heater_fan hotend_fan', 'heater_fan chamber_fan',
+];
 
 type Pending = { resolve: (v: any) => void; reject: (e: any) => void; timer: NodeJS.Timeout };
 
@@ -131,7 +140,7 @@ export class MoonrakerClient extends EventEmitter {
         o.startsWith('filament_switch_sensor') || o.startsWith('filament_motion_sensor'));
       // Creality K-series light and fans (plain output pins). Automatic fans
       // (heater_fan / temperature_fan) are deliberately not included.
-      this.peripheralObjects = PERIPHERAL_OBJECTS.filter(o => objs.includes(o));
+      this.peripheralObjects = [...PERIPHERAL_OBJECTS, ...ENV_OBJECTS].filter(o => objs.includes(o));
     } catch { /* sensors optional */ }
 
     const objects: Record<string, null> = {
