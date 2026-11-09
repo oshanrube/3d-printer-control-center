@@ -60,6 +60,8 @@ function munge(offer, answer){
   }
   const v=document.getElementById('v'), c=document.getElementById('c'), ctx=c.getContext('2d');
   pc.ontrack=e=>{v.srcObject=e.streams[0];v.play().catch(()=>{});};
+  // Tell Node when the connection dies so it can rebuild this page.
+  pc.onconnectionstatechange=()=>{const s=pc.connectionState;if((s==='failed'||s==='closed')&&window.__err)window.__err('connection '+s);};
   await pc.setLocalDescription(await pc.createOffer());
   await new Promise(r=>{if(pc.iceGatheringState==='complete')return r();const f=()=>{if(pc.iceGatheringState==='complete'){pc.removeEventListener('icegatheringstatechange',f);r();}};pc.addEventListener('icegatheringstatechange',f);setTimeout(r,4000);});
   const offer=pc.localDescription.sdp;
@@ -85,7 +87,17 @@ function munge(offer, answer){
 </script></body></html>`;
 }
 
-interface Rec { page: Page; lastFrame?: Buffer; lastFrameAt: number; holdUntil: number; starting: boolean; }
+interface Rec {
+  page: Page; lastFrame?: Buffer; lastFrameAt: number; holdUntil: number; starting: boolean;
+  startedAt: number;
+  error?: string;       // set when the page reports a failed/closed connection or a setup error
+}
+
+// A page that hasn't produced a first frame this long after starting, or whose
+// frames stopped this long ago, is considered dead and rebuilt on the next request.
+// (Keyframe mode delivers a frame every ~0.7–1s, so these leave a wide margin.)
+const FIRST_FRAME_MS = 20_000;
+const STALE_FRAME_MS = 15_000;
 
 export class WebrtcRelay {
   private browser?: Browser;
@@ -123,23 +135,49 @@ export class WebrtcRelay {
   /** Start (or keep) a relay page for a printer. Safe to call repeatedly. */
   async ensure(printer: Printer) {
     if (!this.available) return;
-    if (this.pages.has(printer.id)) return;
+    const existing = this.pages.get(printer.id);
+    if (existing) {
+      const why = this.unhealthy(existing);
+      if (!why) return;
+      // The connection died (printer reboot, Wi-Fi drop, ...): rebuild the page,
+      // keeping its viewer hold so live viewing carries on.
+      console.log(`[webrtc-relay] restarting camera for ${printer.name}: ${why}`);
+      this.pages.delete(printer.id);
+      try { await existing.page?.close(); } catch { /* ignore */ }
+      return this.start(printer, existing.holdUntil);
+    }
+    return this.start(printer);
+  }
+
+  private unhealthy(r: Rec): string | null {
+    if (r.starting) return null;
+    const now = Date.now();
+    if (r.error) return r.error;
+    if (!r.lastFrameAt && now - r.startedAt > FIRST_FRAME_MS) return `no video ${Math.round((now - r.startedAt) / 1000)}s after connecting`;
+    if (r.lastFrameAt && now - r.lastFrameAt > STALE_FRAME_MS) return `video stopped ${Math.round((now - r.lastFrameAt) / 1000)}s ago`;
+    return null;
+  }
+
+  private async start(printer: Printer, holdUntil = 0) {
     const browser = await this.ensureBrowser().catch(() => undefined);
     if (!browser) return;
     if (this.pages.has(printer.id)) return;
     await this.evictIfFull();
-    const rec: Rec = { page: undefined as any, lastFrameAt: 0, holdUntil: Date.now() + GRACE_MS, starting: true };
+    const now = Date.now();
+    const rec: Rec = { page: undefined as any, lastFrameAt: 0, holdUntil: Math.max(holdUntil, now + GRACE_MS), starting: true, startedAt: now };
     this.pages.set(printer.id, rec);
     try {
       const page = await browser.newPage();
       rec.page = page;
       await page.exposeFunction('__frame', (b64: string) => { rec.lastFrame = Buffer.from(b64, 'base64'); rec.lastFrameAt = Date.now(); });
-      await page.exposeFunction('__err', (_m: string) => { /* keep quiet; snapshot falls back */ });
+      await page.exposeFunction('__err', (m: string) => { rec.error = m || 'error'; });
       const host = String(printer.ip).replace(/^https?:\/\//, '').split(':')[0];
       await page.setContent(relayHtml(host, printer.webrtcPort || 8000), { waitUntil: 'load' });
+      rec.startedAt = Date.now();
       rec.starting = false;
     } catch (e) {
-      this.pages.delete(printer.id);
+      if (this.pages.get(printer.id) === rec) this.pages.delete(printer.id);
+      try { await rec.page?.close(); } catch { /* ignore */ }
     }
   }
 

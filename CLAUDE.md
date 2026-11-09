@@ -59,10 +59,12 @@ Stack: Fastify 4, @fastify/websocket 8, better-sqlite3 11, web-push, ws, puppete
 `PORT` (8081), `DATA_DIR`, `STALL_MINUTES` (8), `DATASET_SNAPSHOT_SEC` (20), `DATASET_ENABLED`, `AUTO_PAUSE_RUNOUT`, `AUTO_PAUSE_ERROR`, `IDLE_HEATER_ALERT_MIN` (15), `IDLE_HEATER_OFF_MIN` (45, 0 = alert only), `WEBRTC_DECODE` (`keyframes` default | `full`), `WEBRTC_IDLE_MS` (30000), `WEBRTC_GRACE_MS` (10000), `WEBRTC_MAX_PAGES` (4), `CHROMIUM_PATH`, `VAPID_SUBJECT`, `CLOUDFLARE_TUNNEL_TOKEN` (in `.env`).
 
 ## Detection engine (`engine.ts`)
-- Print started / finished / cancelled; Klipper error (critical); printer offline during a print.
+- Print started / finished / cancelled, tracked with an `inPrint` flag: only transitions the engine actually saw count, so backend restarts and reconnects can't replay a finished print (this used to happen on every restart) or re-announce a running one. A dropped connection doesn't end dataset capture.
+- Klipper error (critical), once per distinct error (not on every reconnect). Creality's JSON errors (sometimes malformed) are made readable in `errors.ts`, with hints for confirmed codes (`key586` = move out of range, usually a file sliced for another printer model).
+- Printer offline (warning during a print).
 - Filament runout while printing -> critical + **auto-pause**.
 - Stall: no progress for `STALL_MINUTES` while printing.
-- **Creality fault** (from `:9999`) -> critical push explaining the code and whether heaters are still on; `fault_cleared` when it goes away.
+- **Creality fault** (from `:9999`) -> critical push explaining the code and whether heaters are still on; `fault_cleared` when it goes away. The firmware also mirrors Klipper errors as its own codes (Klipper `key586` -> Creality `2586`); after a 5 s settle, a fault is skipped if Klipper is in error, since the Klipper alert already covers it.
 - **Idle-heater watchdog:** heaters on (target > 0) with nothing printing -> alert at 15 min, `TURN_OFF_HEATERS` at 45 min, critical alert if still on 5 min later. Paused prints get the alert only. The firmware's pre-print phase (`vendorBusy`) is exempt for up to 60 min.
 - Dataset: during each print, a snapshot + telemetry row every 20 s into `data/snapshots/p<id>_<ts>/` and the `prints`/`telemetry` tables, labelled with the outcome. Intended for training a failure-detection model later.
 
@@ -73,6 +75,7 @@ Stack: Fastify 4, @fastify/websocket 8, better-sqlite3 11, web-push, ws, puppete
   - **Only Chromium can decode it.** Dead ends: `aiortc` can't complete DTLS with libpeer; `@roamhq/wrtc` has no H264 decoder.
   - The relay drives one headless-Chromium page per printer, on demand. Live viewing holds a page warm (`touch`); dataset capture uses grab-and-release; idle pages are torn down.
   - **Keyframes-only decode (default):** printers send a keyframe every ~1.0 s (K2) / ~0.67 s (K1C). An encoded-insertable-streams transform drops delta frames before the decoder: full resolution at ~1–1.5 fps for ~0.3 core per camera, versus 1+ core for full decode. All 4 WebRTC cameras live ≈ 120% CPU total.
+  - **Self-healing:** a page whose connection fails/closes, or that produces no frame within 20 s or stops producing frames for 15 s, is rebuilt on the next request. (Before this, a page whose connection dropped stayed open forever while the dashboard kept polling, and the camera showed 502 until a restart.)
   - Capture must be **timer-driven**: `requestVideoFrameCallback` doesn't fire in background tabs (every relay page but one). Background throttling is disabled via Chromium flags.
   - **No hardware decode:** the RK3566 VPU is only exposed through Rockchip's vendor MPP (`/dev/mpp_service`), which Chromium can't use (needs VAAPI or upstream V4L2). It would need a mainline kernel.
 - **MJPEG printers** (Luffy, Zoro): `mjpg_streamer` on `:8080` (`/usr/bin/mjpg_streamer -i input_memfd.so -t 0 -o output_http.so -w /usr/share/mjpg-streamer/www/ -p 8080`), and the backend polls snapshots. The K1Cs could in principle run this too, but that was dropped in favour of the universal WebRTC relay.
@@ -85,6 +88,8 @@ Stack: Fastify 4, @fastify/websocket 8, better-sqlite3 11, web-push, ws, puppete
 
 ## History / incidents
 - **2026-11-08 21:19, Sanji:** a cloud-started reprint was halted by error 521 (the previous batch was still on the bed). The job never reached Klipper (Moonraker said "standby"), and **heaters stayed at bed 100°C / nozzle 190°C for ~9 h** until the error was dismissed at 06:13. This led to the `:9999` fault feed and the idle-heater watchdog.
+
+- **2026-11-09 14:14, Usopp:** a file sliced for the **K2 Plus** (350 mm bed, `M8200` CFS commands) was sent to the K1C. Its start gcode moved to Y345, and Klipper stopped with `key586` "Move out of range" before printing. The K1C-sliced copy of the same model printed fine.
 
 ## Open items
 - [ ] **Cloudflare Tunnel** (needed for remote access and Web Push, since push requires HTTPS): create the tunnel, set the public hostname to `http://localhost:8081`, put `CLOUDFLARE_TUNNEL_TOKEN` in `/root/3d-printer-control-center/.env`, and run `docker compose --profile tunnel up -d`. The token was saved as the GitHub Actions secret `Cloudflare_tunnel`, but Actions secrets can't be read back; it has to be pasted into `.env` (or delivered by a self-hosted runner workflow).

@@ -40,6 +40,7 @@ export interface LiveState {
   // From Creality's own firmware feed (:9999). undefined = feed unavailable.
   fault?: { code: number; message: string; description: string } | null;
   vendorBusy?: boolean;       // firmware is running a job Klipper can't see yet (pre-print heat/level)
+  errorText?: string;         // readable Klipper error (when state === 'error')
   updatedAt: number;
 }
 

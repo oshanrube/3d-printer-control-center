@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { MoonrakerClient } from './moonraker.js';
 import { CrealityClient, describeFault } from './creality.js';
+import { describeKlipperError } from './errors.js';
 import { printersRepo } from './db.js';
 import type { LiveState, Printer, PrintState } from './types.js';
 
@@ -124,6 +125,12 @@ export class Fleet extends EventEmitter {
       ...this.vendorFields(entry),
       updatedAt: Date.now(),
     };
+    if (next.state === 'error' && next.stateMessage) {
+      const k = describeKlipperError(next.stateMessage);
+      next.errorText = k.hint ? `${k.text}. ${k.hint}` : k.text;
+      // The firmware mirrors Klipper errors as its own fault code; describe it with Klipper's message.
+      if (next.fault) next.fault = { ...next.fault, description: next.errorText };
+    }
     entry.state = next;
     this.emitState(id);
   }

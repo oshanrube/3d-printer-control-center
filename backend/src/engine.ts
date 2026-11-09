@@ -4,6 +4,7 @@ import { config } from './config.js';
 import { eventsRepo, printsRepo } from './db.js';
 import { captureForDataset } from './camera.js';
 import { sendPush } from './push.js';
+import { describeKlipperError } from './errors.js';
 import type { Fleet } from './fleet.js';
 import type { LiveState, PrinterEvent, EventType, Severity } from './types.js';
 
@@ -22,7 +23,12 @@ interface Track {
   heatOffAt?: number;           // when we sent TURN_OFF_HEATERS
   heatOffFailed?: boolean;
   vendorBusySince?: number;     // firmware pre-print phase started (Klipper not printing yet)
+  inPrint?: boolean;            // we've seen this print running (printing/paused)
+  lastKlipperError?: string;    // last Klipper error already alerted
+  faultAlerted?: boolean;       // current Creality fault was alerted (not a mirror of a Klipper error)
 }
+
+const FAULT_SETTLE_MS = 5000;
 
 // The firmware's pre-print phase (heat, self-test, levelling) never legitimately runs
 // this long; past it, a "busy" firmware with no print is treated as stuck.
@@ -82,31 +88,56 @@ export class Engine {
                   filename: s.filename ?? null, actionTaken: actionTaken ?? null });
 
     // ---- Connectivity transitions ----
+    // A print keeps running on the printer while we're disconnected, so don't end
+    // its tracking here; the state after reconnecting decides what happened.
     if (prev && prev.online && !s.online) {
       const during = prev.state === 'printing' || prev.state === 'paused';
       mk('printer_offline', during ? 'warning' : 'info', `${name} offline`,
          during ? `Lost connection to ${name} during a print.` : `${name} went offline.`);
-      if (during && t.printId) this.endPrint(s.printerId, 'unknown');
     }
 
-    // ---- Print-state transitions ----
-    if (prev && prev.state !== s.state) {
-      if (s.state === 'printing' && prev.state !== 'paused') {
-        this.startPrint(s);
-        mk('print_started', 'info', `${name} started a print`, `${s.filename || 'A print'} started.`);
-      } else if (s.state === 'complete') {
-        mk('print_finished', 'info', `✅ ${name} finished`, `${s.filename || 'Print'} completed.`);
-        this.endPrint(s.printerId, 'completed');
-      } else if (s.state === 'cancelled') {
-        mk('print_cancelled', 'warning', `${name} print cancelled`, `${s.filename || 'Print'} was cancelled.`);
-        this.endPrint(s.printerId, 'cancelled');
-      } else if (s.state === 'error') {
-        mk('klipper_error', 'critical', `⚠️ ${name} error`, s.stateMessage || `${name} reported a printer error.`,
-           config.autoPauseOnError ? 'halted' : undefined);
-        this.endPrint(s.printerId, 'error');
-      } else if (s.state === 'paused' && prev.state === 'printing') {
-        mk('paused', 'info', `${name} paused`, `${s.filename || 'Print'} paused.`);
+    // ---- Print lifecycle ----
+    // Only announce a start/finish we actually observed. `inPrint` survives
+    // reconnects and backend restarts don't set it, so neither can replay a
+    // finished print or re-announce a running one.
+    if (s.online) {
+      const active = s.state === 'printing' || s.state === 'paused';
+      if (active && !t.inPrint) {
+        t.inPrint = true;
+        // A real start: we saw the printer online and idle just before.
+        const sawStart = !!prev && prev.online && prev.state !== 'printing' && prev.state !== 'paused';
+        if (s.state === 'printing' && sawStart)
+          mk('print_started', 'info', `${name} started a print`, `${s.filename || 'A print'} started.`);
+        if (!t.printId) this.startPrint(s);   // also covers joining a print already in progress
+      } else if (t.inPrint && !active) {
+        t.inPrint = false;
+        if (s.state === 'complete') {
+          mk('print_finished', 'info', `✅ ${name} finished`, `${s.filename || 'Print'} completed.`);
+          this.endPrint(s.printerId, 'completed');
+        } else if (s.state === 'cancelled') {
+          mk('print_cancelled', 'warning', `${name} print cancelled`, `${s.filename || 'Print'} was cancelled.`);
+          this.endPrint(s.printerId, 'cancelled');
+        } else if (s.state === 'error') {
+          this.endPrint(s.printerId, 'error');      // alert raised below
+        } else {
+          this.endPrint(s.printerId, 'unknown');    // e.g. printer rebooted mid-print
+        }
       }
+      if (s.state === 'paused' && prev?.state === 'printing')
+        mk('paused', 'info', `${name} paused`, `${s.filename || 'Print'} paused.`);
+    }
+
+    // ---- Klipper errors: once per distinct error, not on every reconnect ----
+    if (s.online && s.state === 'error') {
+      const msg = s.stateMessage || '';
+      if (msg !== t.lastKlipperError) {
+        t.lastKlipperError = msg;
+        const { text, hint } = describeKlipperError(msg);
+        mk('klipper_error', 'critical', `⚠️ ${name} error`, `${text || `${name} reported a printer error.`}${hint ? ` ${hint}` : ''}`,
+           config.autoPauseOnError ? 'halted' : undefined);
+      }
+    } else if (s.online && s.state !== 'error') {
+      t.lastKlipperError = undefined;
     }
 
     // ---- Filament runout (while printing) ----
@@ -133,15 +164,27 @@ export class Engine {
     }
 
     // ---- Creality firmware faults (from :9999, invisible to Moonraker) ----
+    // When Klipper itself errors, the firmware mirrors it as a Creality fault too
+    // (Usopp: Klipper key586 -> Creality 2586). Klipper's alert already covers that,
+    // so wait briefly (the two feeds arrive in either order) and stay quiet if so.
     if (s.fault !== undefined) {
       const code = s.fault?.code ?? 0;
       if (code && code !== t.lastFaultCode) {
-        const heat = s.bedTarget > 0 || s.extruderTarget > 0
-          ? ` Heaters are still on (bed ${s.bedTarget}°C, nozzle ${s.extruderTarget}°C).` : '';
-        mk('printer_fault', 'critical', `⚠️ ${name}: error ${code}`, `${s.fault!.description}.${heat}`);
-      } else if (!code && t.lastFaultCode) {
+        t.faultAlerted = false;
+        setTimeout(() => {
+          const cur = this.fleet.getState(s.printerId);
+          if (!cur?.fault || cur.fault.code !== code || cur.state === 'error') return;
+          t.faultAlerted = true;
+          const heat = cur.bedTarget > 0 || cur.extruderTarget > 0
+            ? ` Heaters are still on (bed ${cur.bedTarget}°C, nozzle ${cur.extruderTarget}°C).` : '';
+          this.emit({ printerId: s.printerId, printerName: name, type: 'printer_fault', severity: 'critical',
+                      title: `⚠️ ${name}: error ${code}`, message: `${cur.fault.description}.${heat}`,
+                      filename: cur.filename ?? null, actionTaken: null });
+        }, FAULT_SETTLE_MS);
+      } else if (!code && t.lastFaultCode && t.faultAlerted) {
         mk('fault_cleared', 'info', `${name} error cleared`, `Error ${t.lastFaultCode} was cleared on the printer.`);
       }
+      if (!code) t.faultAlerted = false;
       t.lastFaultCode = code;
     }
 

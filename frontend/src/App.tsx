@@ -93,10 +93,10 @@ function PrinterCard({ printer, onEdit }: { printer: Printer; onEdit: (p: Printe
         <div class="stat"><div class="k">⏱️ Elapsed</div><div class="v">{fmtDur(s?.printDuration)}</div></div>
         <div class="stat"><div class="k">🏁 ETA</div><div class="v">{fmtETA(s?.etaSeconds)}</div></div>
       </div>
-      {s?.fault && (
-        <div class="fault-banner" title={s.fault.message || undefined}>
-          ⚠️ <b>Error {s.fault.code}</b>: {s.fault.description}
-          {(s.bedTarget > 0 || s.extruderTarget > 0) && <div class="fault-heat">🔥 Heaters still on</div>}
+      {(s?.fault || (st === 'error' && s?.errorText)) && (
+        <div class="fault-banner" title={s!.fault?.message || undefined}>
+          ⚠️ {s!.fault ? <b>Error {s!.fault.code}</b> : <b>Printer error</b>}: {s!.fault?.description || s!.errorText}
+          {(s!.bedTarget > 0 || s!.extruderTarget > 0) && <div class="fault-heat">🔥 Heaters still on</div>}
         </div>
       )}
       {s?.filamentDetected === false && <div class="muted" style="margin-top:8px;color:var(--st-offline)">🧵 Filament runout detected</div>}

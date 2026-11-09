@@ -4,6 +4,7 @@ export interface LiveState {
   etaSeconds?: number | null; bedTemp: number; bedTarget: number;
   extruderTemp: number; extruderTarget: number; filamentDetected?: boolean | null;
   fault?: { code: number; message: string; description: string } | null; vendorBusy?: boolean;
+  errorText?: string;
   updatedAt: number;
 }
 export interface Printer {
