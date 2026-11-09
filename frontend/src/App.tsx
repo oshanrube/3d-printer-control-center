@@ -199,9 +199,22 @@ export function App() {
     setTheme(next); localStorage.setItem('theme', next); document.documentElement.setAttribute('data-theme', next);
   };
   const doPush = async () => {
-    const r = await enablePush(); setPush(r);
-    if (r === 'granted') { try { await api.testPush(); } catch {} }
-    else if (r === 'denied') alert('Notifications blocked. Enable them for this site in your browser settings.');
+    // Browsers only offer push on HTTPS (or localhost); on plain http the APIs don't exist.
+    if (!window.isSecureContext) {
+      alert('Notifications need a secure (HTTPS) connection, and this page is plain http://' + location.host + '.\n\n' +
+            'Open the dashboard through its HTTPS address (Cloudflare Tunnel), or in Chrome allow this address under ' +
+            'chrome://flags → "Insecure origins treated as secure", then relaunch Chrome and try again.');
+      return;
+    }
+    let r: ReturnType<typeof pushStatus>;
+    try { r = await enablePush(); }
+    catch (e: any) { alert(`Couldn't enable notifications: ${e?.message || e}`); return; }
+    setPush(r);
+    if (r === 'granted') {
+      try { await api.testPush(); alert('Notifications are on. A test notification was sent to this device.'); }
+      catch { alert('Notifications are on, but sending the test notification failed.'); }
+    } else if (r === 'denied') alert('Notifications are blocked. Allow them for this site in your browser settings, then try again.');
+    else if (r === 'unsupported') alert('This browser does not support push notifications.');
   };
 
   const counts = { printing: 0, ready: 0, offline: 0, complete: 0 };

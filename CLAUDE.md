@@ -19,6 +19,13 @@ Repo: `oshanrube/3d-printer-control-center`, default branch **`master`**. The ol
 - Printer IDs come from the SQLite DB (seeded in `backend/src/index.ts` on first run; editable in the UI).
 - Moonraker on `:7125`, Creality status feed on `:9999`, WebRTC signaling on `:8000`, MJPEG on `:8080` / `:4408/webcam/`.
 
+### Internet path and remote access
+```
+Internet ── SLT fibre (CGNAT) ── Huawei HG8245H5 ONT (192.168.10.1) ── Tenda router (10.0.68.1) ── Pi (10.0.68.53)
+```
+- The ISP (SLT) uses **CGNAT**: a traceroute's hop after the Huawei is `100.94.0.1`. The shared public IPv4 is not ours, so **port forwarding can't work**. The Huawei's SLT firmware doesn't display its WAN IP anywhere. The Huawei has IPv6 (DHCPv6-PD), but the Tenda doesn't pass it through.
+- **HTTPS and remote access are via Tailscale** (installed on the Pi host from the official apt repo, `tailscaled` enabled at boot). The Pi is the `printers` machine: **https://printers.tail16d5a7.ts.net** (Let's Encrypt cert, tailnet-only), set up with `tailscale serve --bg 8081`; check it with `tailscale serve status`. Only the owner's devices can reach it, so the app's missing login isn't exposed. Web Push works on this origin. Notifications are delivered by Google, so they arrive even when the phone's Tailscale is off; opening the dashboard needs Tailscale on.
+
 ## Host and deployment
 
 - **Orange Pi 3B** (Rockchip RK3566, 4× Cortex-A55, 7.5 GB RAM, vendor BSP kernel 5.10, Ubuntu 20.04). Local timezone **+05:30**.
@@ -92,9 +99,9 @@ Stack: Fastify 4, @fastify/websocket 8, better-sqlite3 11, web-push, ws, puppete
 - **2026-11-09 14:14, Usopp:** a file sliced for the **K2 Plus** (350 mm bed, `M8200` CFS commands) was sent to the K1C. Its start gcode moved to Y345, and Klipper stopped with `key586` "Move out of range" before printing. The K1C-sliced copy of the same model printed fine.
 
 ## Open items
-- [ ] **Cloudflare Tunnel** (needed for remote access and Web Push, since push requires HTTPS): create the tunnel, set the public hostname to `http://localhost:8081`, put `CLOUDFLARE_TUNNEL_TOKEN` in `/root/3d-printer-control-center/.env`, and run `docker compose --profile tunnel up -d`. The token was saved as the GitHub Actions secret `Cloudflare_tunnel`, but Actions secrets can't be read back; it has to be pasted into `.env` (or delivered by a self-hosted runner workflow).
-- [ ] **Cloudflare Access is mandatory** before exposing the app: there is no app-level auth, and anyone with the URL could pause or cancel prints. Use a self-hosted Access app with an email allow-list, one-time PIN, and a long session.
-- [ ] Then enable push on the phone (Android, Chrome PWA) and test.
+- [ ] Enable push on the phone over the Tailscale HTTPS address and confirm the test notification arrives.
+- [ ] In the Tailscale admin console, **disable key expiry** for the `printers` machine, or it drops off the tailnet after ~180 days.
+- [ ] (Unused) The Cloudflare `cloudflared` service is still in `docker-compose.yml` behind the `tunnel` profile. Free-plan Cloudflare Tunnel needs the whole domain on Cloudflare (subdomain-only/CNAME setup is Business+), so it was dropped for Tailscale. Remove it, or keep it for a future dedicated domain. If the app is ever exposed publicly, add auth first.
 - [ ] **Disable PCP on the Pi** (`pmproxy`/`pmcd` etc., which feed `cockpit-pcp`); it burns ~1 core. The agent was blocked from doing this, so the user must run: `sudo systemctl disable --now pmproxy pmie pmlogger pmcd pmie_check.timer pmie_daily.timer pmlogger_check.timer pmlogger_daily-poll.timer pmlogger_daily.timer`
 - [ ] Verify `TURN_OFF_HEATERS` on a real printer (only simulated so far; Klipper accepted the call path).
 - [ ] Only error 521 has a human description; other Creality codes show the firmware text. Add more as they're seen in logs.

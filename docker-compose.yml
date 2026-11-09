@@ -7,6 +7,9 @@ services:
     # media back. On a bridge network Chromium would offer a 172.x address that
     # the printers can't reach, and no video would ever arrive.
     network_mode: host
+    # Run a tiny init as PID 1 so exited Chromium child processes get reaped
+    # (Node as PID 1 leaves them as zombies).
+    init: true
     restart: unless-stopped
     environment:
       - TZ=UTC
