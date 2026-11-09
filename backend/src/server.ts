@@ -1,7 +1,8 @@
 import Fastify from 'fastify';
 import fastifyStatic from '@fastify/static';
 import fastifyWebsocket from '@fastify/websocket';
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { WebSocket } from 'ws';
 import { config } from './config.js';
 import { printersRepo, eventsRepo, printsRepo, aiRepo } from './db.js';
@@ -17,6 +18,8 @@ import { describeKlipperError } from './errors.js';
 const ACTION_QUICK_MS = 3000;
 // Minimum gap between live-state pushes per printer to dashboards (important changes bypass it).
 const STATE_MIN_INTERVAL_MS = 1000;
+// Failure labels the user can give a stopped (or bad completed) print.
+export const FAILURE_REASONS = ['spaghetti', 'jam', 'layer_shift', 'warping', 'adhesion', 'wrong_file', 'not_failed', 'other'];
 
 export function buildServer(fleet: Fleet, ai: { current?: AiAnalyzer } = {}) {
   const app = Fastify({ logger: false });
@@ -131,6 +134,32 @@ export function buildServer(fleet: Fleet, ai: { current?: AiAnalyzer } = {}) {
   });
 
   app.get('/api/prints', async () => printsRepo.recent(50));
+
+  // Failure labels (training data): stopped prints still needing a reason, and labelling.
+  const WEEK = 7 * 24 * 3600_000;
+  app.get('/api/prints/unlabelled', async () => printsRepo.unlabelled(Date.now() - WEEK));
+  app.get('/api/prints/finished', async () => printsRepo.finished(Date.now() - WEEK));
+  app.post('/api/prints/:id/label', async (req, reply) => {
+    const id = Number((req.params as any).id);
+    const b = (req.body || {}) as any;
+    const reason = String(b.reason || '');
+    if (!FAILURE_REASONS.includes(reason)) return reply.code(400).send({ error: `reason must be one of: ${FAILURE_REASONS.join(', ')}` });
+    const note = b.note ? String(b.note).slice(0, 500) : null;
+    if (!printsRepo.label(id, reason, note)) return reply.code(404).send({ error: 'print not found' });
+    broadcast({ type: 'labels' });   // dashboards refresh their "to label" lists
+    return { ok: true };
+  });
+  // The print's last saved camera frame, to help remember what happened.
+  app.get('/api/prints/:id/last-frame', async (req, reply) => {
+    const p = printsRepo.get(Number((req.params as any).id));
+    if (!p?.snapshot_dir) return reply.code(404).send();
+    const dir = join(config.dataDir, p.snapshot_dir);
+    let files: string[] = [];
+    try { files = readdirSync(dir).filter(f => /^\d+\.jpg$/.test(f)).sort(); } catch { /* none */ }
+    if (!files.length) return reply.code(404).send();
+    reply.header('Content-Type', 'image/jpeg').header('Cache-Control', 'max-age=3600');
+    return reply.send(readFileSync(join(dir, files[files.length - 1])));
+  });
 
   // AI failure checks
   app.get('/api/ai/status', async () => ai.current?.status ?? { enabled: false });

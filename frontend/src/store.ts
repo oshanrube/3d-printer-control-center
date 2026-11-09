@@ -5,9 +5,10 @@ interface State {
   connected: boolean;
   printers: Printer[];
   events: PrinterEvent[];
+  labelsVersion: number;   // bumps when the "prints to label" list may have changed
 }
 
-let state: State = { connected: false, printers: [], events: [] };
+let state: State = { connected: false, printers: [], events: [], labelsVersion: 0 };
 const listeners = new Set<() => void>();
 function set(next: Partial<State>) { state = { ...state, ...next }; listeners.forEach(l => l()); }
 
@@ -31,8 +32,11 @@ function connect() {
     } else if (msg.type === 'state') {
       const live: LiveState = msg.state;
       set({ printers: state.printers.map(p => p.id === live.printerId ? { ...p, live } : p) });
+    } else if (msg.type === 'labels') {
+      set({ labelsVersion: state.labelsVersion + 1 });
     } else if (msg.type === 'event') {
-      set({ events: [msg.event, ...state.events].slice(0, 200) });
+      const stopped = ['print_cancelled', 'klipper_error', 'print_finished'].includes(msg.event?.type);
+      set({ events: [msg.event, ...state.events].slice(0, 200), ...(stopped ? { labelsVersion: state.labelsVersion + 1 } : {}) });
       onEventHooks.forEach(h => h(msg.event));
     }
   };

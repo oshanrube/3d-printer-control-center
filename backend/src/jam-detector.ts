@@ -12,7 +12,7 @@
  *   peer: same model + file + target temperature + part-fan speed, printing at the same
  *         time; this printer below PEER_RATIO of the peers' median for HOLD minutes.
  *   self: target unchanged and average part-fan speed matching; the last 5 min at
- *         least SELF_DROP below the level 10-35 min ago, for HOLD minutes.
+ *         least SELF_DROP below the median level 15-60 min ago, for HOLD minutes.
  * Both skip the first MIN_RUN minutes of a print. One warning per print.
  */
 import { printsRepo } from './db.js';
@@ -25,9 +25,13 @@ export const JAM = {
   PEER_RATIO: 0.85,        // healthy peers measured 0.93 apart; the jam 0.74
   PEER_WINDOW_MIN: 10,
   FAN_TOLERANCE: 0.05,
-  SELF_DROP: 0.12,         // Sanji's jam: -15%
-  SELF_BASE_FROM_MIN: 35,
-  SELF_BASE_TO_MIN: 10,
+  // Jams seen: Sanji -15%, Luffy -12.5%. Healthy prints: at most -6.4%.
+  SELF_DROP: 0.10,
+  // Reference = median power 15-60 min ago. Ending it 15 min back means a fresh jam
+  // can't leak into its own reference before the warning has had time to fire (with
+  // a 10-35 min window, Luffy's jam diluted the reference and never held long enough).
+  SELF_BASE_FROM_MIN: 60,
+  SELF_BASE_TO_MIN: 15,
   SELF_RECENT_MIN: 5,
 };
 
@@ -45,17 +49,17 @@ export function recentLevel(rows: Row[], now: number, min = JAM.PEER_WINDOW_MIN)
   return { power: mean(w.map(r => r.power!)), fan: mean(w.map(r => r.fan0!)), target: w[0].target! };
 }
 
-/** Self check: fractional drop of the last 5 min vs 10-35 min ago, or null if not comparable. */
+/** Self check: fractional drop of the last 5 min vs the median 15-60 min ago, or null if not comparable. */
 export function selfDrop(rows: Row[], now: number): number | null {
   const win = rows.filter(r => valid(r) && r.t > now - JAM.SELF_BASE_FROM_MIN * 60_000 && r.t <= now);
   if (!win.length || new Set(win.map(r => r.target)).size !== 1) return null;
   const base = win.filter(r => r.t <= now - JAM.SELF_BASE_TO_MIN * 60_000);
   const recent = win.filter(r => r.t > now - JAM.SELF_RECENT_MIN * 60_000);
-  if (base.length < 40 || recent.length < 10) return null;
+  if (base.length < 60 || recent.length < 10) return null;          // >= ~20 min of reference
   // The slicer nudges the part fan layer to layer (e.g. 74-82%); what matters is that the
   // average cooling in the two windows matches.
   if (Math.abs(mean(recent.map(r => r.fan0!)) - mean(base.map(r => r.fan0!))) > JAM.FAN_TOLERANCE) return null;
-  return 1 - mean(recent.map(r => r.power!)) / mean(base.map(r => r.power!));
+  return 1 - mean(recent.map(r => r.power!)) / median(base.map(r => r.power!));
 }
 
 /** Peer check: this printer's level / median of comparable peers' levels, or null. */

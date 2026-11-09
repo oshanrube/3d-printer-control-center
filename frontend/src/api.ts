@@ -19,7 +19,25 @@ export interface Printer {
 export interface PrinterEvent {
   id?: number; printerId: number; printerName: string; type: string; severity: string;
   title: string; message: string; filename?: string | null; actionTaken?: string | null; createdAt: number;
+  pushResult?: string | null;
 }
+
+export interface StoppedPrint {
+  id: number; printerId: number; printerName: string; filename: string | null; outcome: string;
+  startedAt: number; endedAt: number; reason?: string | null; note?: string | null;
+}
+
+// Failure labels (must match the backend's FAILURE_REASONS).
+export const FAILURE_REASONS: { key: string; label: string }[] = [
+  { key: 'spaghetti', label: '🍝 Spaghetti / came loose' },
+  { key: 'jam', label: '🧵 Jam / printing in air' },
+  { key: 'layer_shift', label: '↔️ Layer shift' },
+  { key: 'warping', label: '📐 Warping / lifted corner' },
+  { key: 'adhesion', label: '🧲 Didn\'t stick to bed' },
+  { key: 'wrong_file', label: '📄 Wrong file / settings' },
+  { key: 'not_failed', label: '✋ Not a failure (I stopped it)' },
+  { key: 'other', label: '❓ Other' },
+];
 
 async function j<T>(url: string, opts?: RequestInit): Promise<T> {
   const res = await fetch(url, { headers: { 'Content-Type': 'application/json' }, ...opts });
@@ -53,4 +71,9 @@ export const api = {
     return body;
   },
   snapshotUrl: (id: number) => `/api/camera/${id}/snapshot`,
+  unlabelled: () => j<StoppedPrint[]>('/api/prints/unlabelled'),
+  finished: () => j<StoppedPrint[]>('/api/prints/finished'),
+  label: (id: number, reason: string, note?: string) =>
+    j(`/api/prints/${id}/label`, { method: 'POST', body: JSON.stringify({ reason, note }) }),
+  lastFrameUrl: (id: number) => `/api/prints/${id}/last-frame`,
 };

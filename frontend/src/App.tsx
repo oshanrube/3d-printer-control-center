@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
-import { api, type Printer, type PrinterEvent } from './api';
+import { api, FAILURE_REASONS, type Printer, type PrinterEvent, type StoppedPrint } from './api';
 import { useStore } from './store';
 import { enablePush, pushStatus } from './push';
 
@@ -94,7 +94,10 @@ function Camera({ printer }: { printer: Printer }) {
 }
 
 /* ---------- printer card ---------- */
-function PrinterCard({ printer, onEdit }: { printer: Printer; onEdit: (p: Printer) => void }) {
+function PrinterCard({ printer, onEdit, toLabel, onLabelled, onLater }: {
+  printer: Printer; onEdit: (p: Printer) => void;
+  toLabel?: StoppedPrint; onLabelled: () => void; onLater: (id: number) => void;
+}) {
   const s = printer.live;
   const st = s?.state || 'offline';
   const busy = useRef(false);
@@ -144,6 +147,9 @@ function PrinterCard({ printer, onEdit }: { printer: Printer; onEdit: (p: Printe
           {s.ai.reason && <div class="ai-reason">{s.ai.reason}</div>}
         </div>
       )}
+      {toLabel && st !== 'printing' && st !== 'paused' && (
+        <LabelPrompt print={toLabel} onDone={onLabelled} onLater={() => onLater(toLabel.id)} />
+      )}
       <Camera printer={printer} />
       {s?.online && (st === 'printing' || st === 'paused') && (
         <div class="actions">
@@ -183,6 +189,75 @@ function PrinterModal({ printer, onClose }: { printer: Printer | 'new'; onClose:
         </div>
         <div class="row"><button class="btn btn-primary" style="flex:1" onClick={save}>{editing ? 'Save' : 'Add'}</button>
           <button class="btn btn-ghost" onClick={onClose}>Cancel</button></div>
+      </div>
+    </div>
+  );
+}
+
+/* ---------- failure labels (training data) ---------- */
+function ReasonChips({ print, onDone }: { print: StoppedPrint; onDone: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const pick = async (key: string) => {
+    let note: string | undefined;
+    if (key === 'other') { const n = prompt('What went wrong? (short note)'); if (n === null) return; note = n; }
+    setBusy(true);
+    try { await api.label(print.id, key, note); onDone(); }
+    catch (e: any) { alert(`Couldn't save the label: ${e?.message || e}`); }
+    finally { setBusy(false); }
+  };
+  return (
+    <div class="chips">
+      {FAILURE_REASONS.map(r => <button class="chip" disabled={busy} onClick={() => pick(r.key)}>{r.label}</button>)}
+    </div>
+  );
+}
+
+function LabelPrompt({ print, onDone, onLater }: { print: StoppedPrint; onDone: () => void; onLater: () => void }) {
+  return (
+    <div class="label-prompt">
+      <div class="label-head">
+        <img class="thumb" src={api.lastFrameUrl(print.id)} alt="" onError={(e: any) => { e.currentTarget.style.display = 'none'; }} />
+        <div>
+          <div class="label-q">Why did the last print stop?</div>
+          <div class="muted">{print.outcome === 'error' ? 'Error' : 'Cancelled'} {timeAgo(print.endedAt)} · {print.filename || 'unknown file'}</div>
+        </div>
+        <button class="icon-btn" title="Later" onClick={onLater}>×</button>
+      </div>
+      <ReasonChips print={print} onDone={onDone} />
+    </div>
+  );
+}
+
+function LabelModal({ onClose, onChanged }: { onClose: () => void; onChanged: () => void }) {
+  const [tab, setTab] = useState<'stopped' | 'all'>('stopped');
+  const [rows, setRows] = useState<StoppedPrint[] | null>(null);
+  const load = async () => setRows(tab === 'stopped' ? await api.unlabelled() : await api.finished());
+  useEffect(() => { setRows(null); load(); }, [tab]);
+  const reasonLabel = (k?: string | null) => FAILURE_REASONS.find(r => r.key === k)?.label;
+  return (
+    <div class="modal" onClick={(e) => e.target === e.currentTarget && onClose()}>
+      <div class="modal-box">
+        <h2>Label failed prints</h2>
+        <p class="muted" style="margin-bottom:12px">Saying why prints failed turns the recorded camera frames and sensor data into training data for better failure detection.</p>
+        <div class="row" style="margin-bottom:12px">
+          <button class={`btn btn-sm ${tab === 'stopped' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setTab('stopped')}>Needs a label</button>
+          <button class={`btn btn-sm ${tab === 'all' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setTab('all')}>All recent (mark a completed print as bad)</button>
+          <button class="btn btn-sm btn-ghost" onClick={onClose}>Close</button>
+        </div>
+        {!rows && <p class="muted">Loading…</p>}
+        {rows && rows.length === 0 && <p class="muted">{tab === 'stopped' ? 'Nothing to label. 🎉' : 'No prints in the last week.'}</p>}
+        {rows && rows.map(p => (
+          <div class="label-row">
+            <div class="label-head">
+              <img class="thumb" src={api.lastFrameUrl(p.id)} alt="" onError={(e: any) => { e.currentTarget.style.display = 'none'; }} />
+              <div>
+                <div class="label-q">{p.printerName}: {p.outcome}{p.reason ? ` · ${reasonLabel(p.reason)}` : ''}</div>
+                <div class="muted">{timeAgo(p.endedAt)} · {p.filename || 'unknown file'}{p.note ? ` · “${p.note}”` : ''}</div>
+              </div>
+            </div>
+            <ReasonChips print={p} onDone={() => { onChanged(); load(); }} />
+          </div>
+        ))}
       </div>
     </div>
   );
@@ -233,8 +308,15 @@ function Applier({ r, printers, onApply }: any) {
 
 /* ---------- app ---------- */
 export function App() {
-  const { printers, events, connected } = useStore();
-  const [modal, setModal] = useState<null | { kind: 'printer'; p: Printer | 'new' } | { kind: 'scan' }>(null);
+  const { printers, events, connected, labelsVersion } = useStore();
+  const [modal, setModal] = useState<null | { kind: 'printer'; p: Printer | 'new' } | { kind: 'scan' } | { kind: 'labels' }>(null);
+  // Stopped prints still needing a failure reason (refreshed when one is labelled or a print stops).
+  const [toLabel, setToLabel] = useState<StoppedPrint[]>([]);
+  const [later, setLater] = useState<Set<number>>(new Set());
+  const loadLabels = () => api.unlabelled().then(setToLabel).catch(() => {});
+  useEffect(() => { loadLabels(); }, [labelsVersion]);
+  useEffect(() => { const t = setInterval(loadLabels, 120_000); return () => clearInterval(t); }, []);
+  const newestToLabel = (printerId: number) => toLabel.find(p => p.printerId === printerId && !later.has(p.id));
   const [push, setPush] = useState(pushStatus());
   const [theme, setTheme] = useState(document.documentElement.getAttribute('data-theme') || 'dark');
 
@@ -284,6 +366,9 @@ export function App() {
           <div class="tile offline"><span class="n">{counts.offline}</span><span class="l">Offline</span></div>
         </div>
         <div class="spacer" />
+        {toLabel.length > 0 && (
+          <button class="btn btn-ghost btn-sm" title="Failed prints that need a reason" onClick={() => setModal({ kind: 'labels' })}>🏷️ {toLabel.length}</button>
+        )}
         <button class="btn btn-ghost btn-sm" onClick={() => setModal({ kind: 'printer', p: 'new' })}>＋ Add</button>
         <button class="btn btn-ghost btn-sm" onClick={() => setModal({ kind: 'scan' })}>🔍 Scan</button>
         <button class="btn btn-ghost btn-sm" onClick={doPush} title="Notifications">
@@ -295,7 +380,8 @@ export function App() {
       <main>
         {printers.length === 0 && <p class="muted" style="text-align:center;padding:40px">No printers yet. Click Add or Scan.</p>}
         <div class="grid">
-          {sorted.map((p) => <PrinterCard key={p.id} printer={p} onEdit={(pr) => setModal({ kind: 'printer', p: pr })} />)}
+          {sorted.map((p) => <PrinterCard key={p.id} printer={p} onEdit={(pr) => setModal({ kind: 'printer', p: pr })}
+            toLabel={newestToLabel(p.id)} onLabelled={loadLabels} onLater={(id) => setLater(new Set([...later, id]))} />)}
         </div>
 
         {events.length > 0 && (
@@ -304,7 +390,8 @@ export function App() {
             {events.slice(0, 25).map((e: PrinterEvent) => (
               <div class={`evt ${e.severity}`}>
                 <span class="ic">{evIcon[e.type] || 'ℹ️'}</span>
-                <div><div class="et">{e.title}{e.actionTaken ? ` · ${e.actionTaken}` : ''}</div><div class="em">{e.message}</div></div>
+                <div><div class="et">{e.title}{e.actionTaken ? ` · ${e.actionTaken}` : ''}</div><div class="em">{e.message}</div>
+                  {e.pushResult && <div class="push-res">📲 {e.pushResult}</div>}</div>
                 <span class="ts">{timeAgo(e.createdAt)}</span>
               </div>
             ))}
@@ -314,6 +401,7 @@ export function App() {
 
       {modal?.kind === 'printer' && <PrinterModal printer={modal.p} onClose={() => setModal(null)} />}
       {modal?.kind === 'scan' && <ScanModal printers={printers} onClose={() => setModal(null)} />}
+      {modal?.kind === 'labels' && <LabelModal onClose={() => setModal(null)} onChanged={loadLabels} />}
     </div>
   );
 }

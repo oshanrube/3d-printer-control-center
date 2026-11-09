@@ -51,7 +51,11 @@ export async function sendPush(payload: PushPayload): Promise<PushResult> {
     let service = 'push service';
     try { service = new URL(s.endpoint).host; } catch { /* keep default */ }
     try {
-      await webpush.sendNotification(s as any, data);
+      // "high" urgency makes Android deliver immediately even when the phone is idle
+      // (Doze); with the default "normal", alerts can be held back for many minutes.
+      // Info-level messages can wait.
+      const urgent = payload.severity !== 'info';
+      await webpush.sendNotification(s as any, data, { urgency: urgent ? 'high' : 'normal', TTL: urgent ? 6 * 3600 : 3600 });
       result.sent++;
     } catch (err: any) {
       const status = err?.statusCode;

@@ -14,6 +14,8 @@ services:
     environment:
       - TZ=UTC
       - PORT=8081            # app binds :8081 directly on the host (no port mapping in host mode)
+      # Refuse to start if this file is missing from /data (data drive not mounted).
+      - DATA_MARKER=${DATA_MARKER:-}
       # Engine tuning (optional):
       # - AUTO_PAUSE_RUNOUT=1
       # - AUTO_PAUSE_ERROR=1
@@ -32,7 +34,8 @@ services:
       - AI_API_KEY=${AI_API_KEY:-}
       - AI_BASE_URL=${AI_BASE_URL:-http://10.0.68.30:8888}
     volumes:
-      - ./data:/data
+      # On the Pi: DATA_PATH=/media/nvme/printer-control-center/data (in .env).
+      - ${DATA_PATH:-./data}:/data
 
   # Cloudflare Tunnel -> real HTTPS + remote access (required for Web Push).
   # 1) Create a tunnel in Cloudflare Zero Trust (Networks -> Tunnels).

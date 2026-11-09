@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { config } from './config.js';
 import { eventsRepo, printsRepo } from './db.js';
 import { captureForDataset } from './camera.js';
-import { sendPush } from './push.js';
+import { sendPush, type PushResult } from './push.js';
 import { describeKlipperError } from './errors.js';
 import type { Fleet } from './fleet.js';
 import type { LiveState, PrinterEvent, EventType, Severity } from './types.js';
@@ -74,16 +74,22 @@ export class Engine {
 
   private async emit(e: Omit<PrinterEvent, 'createdAt'>) {
     const full: PrinterEvent = { ...e, createdAt: Date.now() };
-    eventsRepo.add(full);
+    const saved = eventsRepo.add(full);
     this.broadcast(full);
     if (PUSH_FOR[full.type]) {
-      await sendPush({
+      // Tag per printer *and* alert type, so e.g. a jam warning can't silently replace
+      // an earlier spaghetti alert in the notification tray.
+      const r = await sendPush({
         title: full.title,
         body: full.message,
-        tag: `printer-${full.printerId}`,
+        tag: `printer-${full.printerId}-${full.type}`,
         severity: full.severity,
         printerId: full.printerId,
-      }).catch(() => {});
+      }).catch((err: any): PushResult => ({ total: 0, sent: 0, failures: [{ service: 'push', error: String(err?.message || err) }], removed: 0 }));
+      // Record what happened to the notification, so "I didn't get it" can be answered.
+      const summary = r.total === 0 ? 'no devices subscribed'
+        : `sent to ${r.sent}/${r.total}` + (r.failures.length ? `; failed: ${r.failures.map(f => `${f.service} ${f.status ?? ''} ${f.error}`.trim()).join(', ')}` : '');
+      if (saved.id) eventsRepo.setPushResult(saved.id, summary);
     }
   }
 

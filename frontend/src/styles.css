@@ -140,3 +140,18 @@ main{margin-top:16px}
 
 /* Fan speeds line under the stats grid */
 .fan-line { margin-top: 8px; font-size: 12px; color: var(--text-dim); font-variant-numeric: tabular-nums; line-height: 1.4; }
+
+/* Failure labels */
+.label-prompt { margin-top: 10px; padding: 10px; border-radius: 10px; border: 1px dashed var(--border-strong); }
+.label-head { display: flex; gap: 10px; align-items: center; }
+.label-head > div { flex: 1; min-width: 0; }
+.label-q { font-weight: 600; font-size: 13px; }
+.label-head .muted { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.thumb { width: 72px; height: 41px; object-fit: cover; border-radius: 6px; flex: none; background: #000; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.chip { font: inherit; font-size: 12px; padding: 5px 9px; border-radius: 999px; cursor: pointer;
+        border: 1px solid var(--border-strong); background: transparent; color: var(--text); }
+.chip:hover:not(:disabled) { border-color: var(--text-dim); }
+.chip:disabled { opacity: .5; cursor: default; }
+.label-row { padding: 10px 0; border-top: 1px solid var(--border); }
+.push-res { font-size: 11px; color: var(--text-faint); margin-top: 2px; }

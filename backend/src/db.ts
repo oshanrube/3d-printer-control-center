@@ -1,9 +1,17 @@
 import Database from 'better-sqlite3';
-import { mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { config } from './config.js';
 import type { Printer, PrinterEvent } from './types.js';
 
+// The data dir lives on the Pi's NVMe, which is mounted with `nofail`. If the drive
+// ever fails to mount, the bind mount would point at an empty folder and we'd silently
+// start a fresh database (losing push subscriptions, history, the dataset). Refuse to
+// start instead when the marker file is missing.
+if (process.env.DATA_MARKER && !existsSync(join(config.dataDir, process.env.DATA_MARKER))) {
+  console.error(`[db] FATAL: ${join(config.dataDir, process.env.DATA_MARKER)} not found. Is the data drive mounted? Refusing to start.`);
+  process.exit(1);
+}
 mkdirSync(config.dataDir, { recursive: true });
 export const db = new Database(join(config.dataDir, 'control-center.db'));
 db.pragma('journal_mode = WAL');
@@ -95,6 +103,20 @@ CREATE TABLE IF NOT EXISTS ai_checks (
 CREATE INDEX IF NOT EXISTS idx_ai_checks_printer ON ai_checks(printer_id, t);
 `);
 
+// Why a print failed, labelled by the user (training labels for failure detection).
+{
+  const cols = new Set((db.prepare('PRAGMA table_info(prints)').all() as any[]).map(c => c.name));
+  if (!cols.has('failure_reason')) db.exec(`ALTER TABLE prints ADD COLUMN failure_reason TEXT`); // see FAILURE_REASONS
+  if (!cols.has('failure_note')) db.exec(`ALTER TABLE prints ADD COLUMN failure_note TEXT`);
+  if (!cols.has('labelled_at')) db.exec(`ALTER TABLE prints ADD COLUMN labelled_at INTEGER`);
+}
+
+// What happened to an event's push notification (e.g. "sent to 2/2").
+{
+  const cols = new Set((db.prepare('PRAGMA table_info(events)').all() as any[]).map(c => c.name));
+  if (!cols.has('push_result')) db.exec(`ALTER TABLE events ADD COLUMN push_result TEXT`);
+}
+
 // Telemetry columns for jam detection research: heater power vs commanded flow.
 {
   const cols = new Set((db.prepare('PRAGMA table_info(telemetry)').all() as any[]).map(c => c.name));
@@ -159,11 +181,14 @@ export const eventsRepo = {
           e.filename ?? null, e.actionTaken ?? null, e.createdAt);
     return { ...e, id: Number(info.lastInsertRowid) };
   },
+  setPushResult(id: number, result: string) {
+    db.prepare('UPDATE events SET push_result = ? WHERE id = ?').run(result.slice(0, 500), id);
+  },
   recent(limit = 100): PrinterEvent[] {
     return db.prepare('SELECT * FROM events ORDER BY id DESC LIMIT ?').all(limit).map((r: any) => ({
       id: r.id, printerId: r.printer_id, printerName: r.printer_name, type: r.type,
       severity: r.severity, title: r.title, message: r.message, filename: r.filename,
-      actionTaken: r.action_taken, createdAt: r.created_at,
+      actionTaken: r.action_taken, createdAt: r.created_at, pushResult: r.push_result ?? null,
     }));
   },
 };
@@ -252,6 +277,34 @@ export const printsRepo = {
       n++;
     }
     return n;
+  },
+  /**
+   * Stopped prints (cancelled / error) without a failure label, newest first. Restart
+   * fragments are marked 'continued', so only the final row of a stopped print matches.
+   */
+  unlabelled(sinceMs: number, limit = 50) {
+    return db.prepare(`
+      SELECT p.id, p.printer_id AS printerId, pr.name AS printerName, p.filename, p.outcome,
+             p.started_at AS startedAt, p.ended_at AS endedAt
+      FROM prints p JOIN printers pr ON pr.id = p.printer_id
+      WHERE p.outcome IN ('cancelled', 'error') AND p.failure_reason IS NULL AND p.ended_at >= ?
+      ORDER BY p.ended_at DESC LIMIT ?`).all(sinceMs, limit);
+  },
+  /** Recent finished prints of any outcome (for labelling a completed print as bad, too). */
+  finished(sinceMs: number, limit = 50) {
+    return db.prepare(`
+      SELECT p.id, p.printer_id AS printerId, pr.name AS printerName, p.filename, p.outcome, p.started_at AS startedAt,
+             p.ended_at AS endedAt, p.failure_reason AS reason, p.failure_note AS note
+      FROM prints p JOIN printers pr ON pr.id = p.printer_id
+      WHERE p.outcome IN ('completed', 'cancelled', 'error') AND p.ended_at >= ?
+      ORDER BY p.ended_at DESC LIMIT ?`).all(sinceMs, limit);
+  },
+  label(id: number, reason: string, note: string | null) {
+    return db.prepare('UPDATE prints SET failure_reason = ?, failure_note = ?, labelled_at = ? WHERE id = ?')
+      .run(reason, note, Date.now(), id).changes > 0;
+  },
+  get(id: number): { id: number; snapshot_dir: string | null } | undefined {
+    return db.prepare('SELECT id, snapshot_dir FROM prints WHERE id = ?').get(id) as any;
   },
   /** Heater power / target / part fan rows of a print since `t` (jam detection). */
   powerSince(printId: number, t: number): { t: number; power: number | null; target: number | null; fan0: number | null }[] {

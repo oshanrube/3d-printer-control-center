@@ -93,5 +93,6 @@ export interface PrinterEvent {
   message: string;
   filename?: string | null;
   actionTaken?: string | null; // e.g. 'auto-paused'
+  pushResult?: string | null;  // what happened to the push notification, e.g. "sent to 2/2"
   createdAt: number;
 }
