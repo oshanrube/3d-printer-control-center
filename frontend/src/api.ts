@@ -5,7 +5,7 @@ export interface LiveState {
   extruderTemp: number; extruderTarget: number; filamentDetected?: boolean | null;
   fault?: { code: number; message: string; description: string } | null; vendorBusy?: boolean;
   errorText?: string;
-  ai?: { assessment: 'success' | 'failure' | 'inconclusive'; confidence: number; reason: string; defects: string[]; at: number } | null;
+  ai?: { source: 'detector' | 'vlm'; assessment: 'success' | 'failure' | 'inconclusive'; confidence: number; reason: string; defects: string[]; at: number } | null;
   updatedAt: number;
 }
 export interface Printer {

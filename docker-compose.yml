@@ -20,11 +20,16 @@ services:
       # - STALL_MINUTES=8
       # - DATASET_SNAPSHOT_SEC=20
       - VAPID_SUBJECT=${VAPID_SUBJECT:-mailto:admin@local}
-      # AI failure checks (vision model on bc250). Put AI_API_KEY in ./.env to enable.
+      # AI failure detection. Secrets live in ./.env (gitignored).
+      # Stage 1: Obico failure detector on bc250 (enabled when OBICO_TOKEN is set).
+      - OBICO_URL=${OBICO_URL:-http://10.0.68.30:3333}
+      - OBICO_TOKEN=${OBICO_TOKEN:-}
+      - OBICO_IMAGE_BASE=${OBICO_IMAGE_BASE:-http://10.0.68.53:8081}
+      - OBICO_SENSITIVITY=${OBICO_SENSITIVITY:-1}
+      - AUTO_PAUSE_FAILURE=${AUTO_PAUSE_FAILURE:-0}   # 1 = pause at the "failure" level
+      # Stage 2 (optional): vision LLM second opinion (enabled when AI_API_KEY is set).
       - AI_API_KEY=${AI_API_KEY:-}
       - AI_BASE_URL=${AI_BASE_URL:-http://10.0.68.30:8888}
-      - AI_INTERVAL_SEC=${AI_INTERVAL_SEC:-120}
-      - AI_AUTO_PAUSE=${AI_AUTO_PAUSE:-0}
     volumes:
       - ./data:/data
 

@@ -111,6 +111,13 @@ export function buildServer(fleet: Fleet, ai: { current?: AiAnalyzer } = {}) {
 
   // AI failure checks
   app.get('/api/ai/status', async () => ai.current?.status ?? { enabled: false });
+  // Frames for the failure detector to download (random single-use keys, 2 min expiry).
+  app.get('/api/ai/frame/:key', async (req, reply) => {
+    const buf = ai.current?.takeFrame(String((req.params as any).key));
+    if (!buf) return reply.code(404).send();
+    reply.header('Content-Type', 'image/jpeg').header('Cache-Control', 'no-store');
+    return reply.send(buf);
+  });
   app.get('/api/ai/checks', async (req) => {
     const q = req.query as any;
     return aiRepo.recent(q?.printerId ? Number(q.printerId) : undefined, Math.min(500, Number(q?.limit) || 50));

@@ -12,8 +12,9 @@ export interface Printer {
 }
 
 export interface AiVerdict {
-  assessment: 'success' | 'failure' | 'inconclusive';
-  confidence: number;         // 0-100
+  source: 'detector' | 'vlm';
+  assessment: 'success' | 'failure' | 'inconclusive';   // detector: low / high risk / warning
+  confidence: number;         // 0-100 (detector: smoothed failure risk)
   reason: string;
   defects: string[];
   at: number;                 // epoch ms

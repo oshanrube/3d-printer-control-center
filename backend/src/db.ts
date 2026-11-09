@@ -95,6 +95,14 @@ CREATE TABLE IF NOT EXISTS ai_checks (
 CREATE INDEX IF NOT EXISTS idx_ai_checks_printer ON ai_checks(printer_id, t);
 `);
 
+// Columns added after ai_checks first shipped.
+{
+  const cols = new Set((db.prepare('PRAGMA table_info(ai_checks)').all() as any[]).map(c => c.name));
+  if (!cols.has('source')) db.exec(`ALTER TABLE ai_checks ADD COLUMN source TEXT`);  // detector | vlm
+  if (!cols.has('score')) db.exec(`ALTER TABLE ai_checks ADD COLUMN score REAL`);    // detector: summed confidences this frame
+  if (!cols.has('risk')) db.exec(`ALTER TABLE ai_checks ADD COLUMN risk REAL`);      // detector: smoothed 0-1 failure risk
+}
+
 // ---- Printers ----
 const rowToPrinter = (r: any): Printer => ({
   id: r.id, name: r.name, ip: r.ip, moonrakerPort: r.moonraker_port,
@@ -217,17 +225,19 @@ export const printsRepo = {
 // ---- AI verdicts ----
 export interface AiCheck {
   printerId: number; printId: number | null; t: number; snapshot: string | null;
+  source: 'detector' | 'vlm';
   assessment: string; confidence: number | null; reason: string | null; defects: string[];
   progress: number | null; model: string | null; latencyMs: number | null; raw: string | null;
+  score?: number | null; risk?: number | null;
 }
 
 export const aiRepo = {
   add(c: AiCheck) {
     db.prepare(
-      `INSERT INTO ai_checks (printer_id, print_id, t, snapshot, assessment, confidence, reason, defects, progress, model, latency_ms, raw)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run(c.printerId, c.printId, c.t, c.snapshot, c.assessment, c.confidence, c.reason,
-          JSON.stringify(c.defects || []), c.progress, c.model, c.latencyMs, c.raw);
+      `INSERT INTO ai_checks (printer_id, print_id, t, snapshot, source, assessment, confidence, reason, defects, progress, model, latency_ms, raw, score, risk)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(c.printerId, c.printId, c.t, c.snapshot, c.source, c.assessment, c.confidence, c.reason,
+          JSON.stringify(c.defects || []), c.progress, c.model, c.latencyMs, c.raw, c.score ?? null, c.risk ?? null);
   },
   recent(printerId?: number, limit = 50) {
     const rows = printerId

@@ -103,9 +103,9 @@ function PrinterCard({ printer, onEdit }: { printer: Printer; onEdit: (p: Printe
       {s?.filamentDetected === false && <div class="muted" style="margin-top:8px;color:var(--st-offline)">🧵 Filament runout detected</div>}
       {s?.ai && (st === 'printing' || st === 'paused') && (
         <div class={`ai-line ai-${s.ai.assessment}`} title={[s.ai.reason, ...(s.ai.defects || [])].filter(Boolean).join(' · ')}>
-          🤖 {s.ai.assessment === 'success' ? 'Looks OK' : s.ai.assessment === 'failure' ? 'Possible failure' : 'Unsure'}
-          {' '}<span class="muted">({s.ai.confidence}%, {timeAgo(s.ai.at)})</span>
-          {s.ai.assessment !== 'success' && s.ai.reason && <div class="ai-reason">{s.ai.reason}</div>}
+          🤖 {s.ai.assessment === 'success' ? 'Looks OK' : s.ai.assessment === 'failure' ? 'Likely failing' : 'Warning'}
+          {' '}<span class="muted">(failure risk {s.ai.confidence}%, {timeAgo(s.ai.at)})</span>
+          {s.ai.reason && <div class="ai-reason">{s.ai.reason}</div>}
         </div>
       )}
       <Camera printer={printer} />

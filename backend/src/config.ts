@@ -25,20 +25,27 @@ export const config = {
   // Turn heaters off after this long (0 = alert only). Never applied to a paused print.
   idleHeaterOffMin: parseInt(process.env.IDLE_HEATER_OFF_MIN || '45', 10),
 
-  // AI failure checks: camera snapshots sent to a vision model (llama.cpp server,
-  // OpenAI-compatible API) during prints. Active when AI_API_KEY is set, or AI_ENABLED=1.
+  // Stage 1 failure detection: Obico's open-source failure detector (ml_api) on bc250.
+  // Hyperparameters are Obico's own (FD_1ST_GEN_PARAMS), tuned for one frame per 10 s.
+  detector: {
+    url: (process.env.OBICO_URL || 'http://10.0.68.30:3333').replace(/\/+$/, ''),
+    token: process.env.OBICO_TOKEN || '',
+    enabled: process.env.OBICO_ENABLED === '1' || (process.env.OBICO_ENABLED !== '0' && !!process.env.OBICO_TOKEN),
+    // Where the detector can fetch frames from this server (it downloads images by URL).
+    imageBase: (process.env.OBICO_IMAGE_BASE || 'http://10.0.68.53:8081').replace(/\/+$/, ''),
+    intervalSec: 10,
+    sensitivity: Number(process.env.OBICO_SENSITIVITY || '1'),  // Obico's "detective sensitivity"
+    autoPause: process.env.AUTO_PAUSE_FAILURE === '1',            // pause at the failure threshold (off: alert only)
+  },
+
+  // Stage 2 (optional second opinion): a vision LLM (llama.cpp server, OpenAI-compatible API).
+  // Asked only when the detector raises an alarm. Active when AI_API_KEY is set, or AI_ENABLED=1.
   ai: {
     baseUrl: (process.env.AI_BASE_URL || 'http://10.0.68.30:8888').replace(/\/+$/, ''),
     apiKey: process.env.AI_API_KEY || '',
     model: process.env.AI_MODEL || '',
     enabled: process.env.AI_ENABLED === '1' || (process.env.AI_ENABLED !== '0' && !!process.env.AI_API_KEY),
-    intervalSec: parseInt(process.env.AI_INTERVAL_SEC || '120', 10),       // per printer
-    minPrintMin: parseInt(process.env.AI_MIN_PRINT_MIN || '3', 10),        // skip the first minutes
-    timeoutSec: parseInt(process.env.AI_TIMEOUT_SEC || '120', 10),
-    alertConfidence: parseInt(process.env.AI_ALERT_CONFIDENCE || '75', 10),
-    failureStreak: parseInt(process.env.AI_FAILURE_STREAK || '2', 10),     // consecutive failures before alerting
-    autoPause: process.env.AI_AUTO_PAUSE === '1',                          // off by default: false positives
-    pauseConfidence: parseInt(process.env.AI_PAUSE_CONFIDENCE || '90', 10),
+    timeoutSec: parseInt(process.env.AI_TIMEOUT_SEC || '90', 10),
   },
 };
 
