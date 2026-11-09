@@ -24,6 +24,9 @@ export const config = {
   idleHeaterAlertMin: parseInt(process.env.IDLE_HEATER_ALERT_MIN || '15', 10),
   // Turn heaters off after this long (0 = alert only). Never applied to a paused print.
   idleHeaterOffMin: parseInt(process.env.IDLE_HEATER_OFF_MIN || '45', 10),
+  // Turn the light and switchable fans off after they've been on this long with
+  // nothing printing (0 = never). Automatic hotend/chamber fans are never touched.
+  idleOffMin: parseInt(process.env.IDLE_OFF_MIN || '10', 10),
 
   // Stage 1 failure detection: Obico's open-source failure detector (ml_api) on bc250.
   // Hyperparameters are Obico's own (FD_1ST_GEN_PARAMS), tuned for one frame per 10 s.

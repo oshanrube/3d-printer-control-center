@@ -51,6 +51,8 @@ export interface LiveState {
   vendorBusy?: boolean;       // firmware is running a job Klipper can't see yet (pre-print heat/level)
   errorText?: string;         // readable Klipper error (when state === 'error')
   ai?: AiVerdict | null;      // latest vision-model check of this printer's camera (during prints)
+  // Light and switchable fans, 0-1 (only those the printer has). Automatic fans excluded.
+  peripherals?: { light?: number; fan0?: number; fan1?: number; fan2?: number };
   updatedAt: number;
 }
 
@@ -68,6 +70,7 @@ export type EventType =
   | 'heaters_idle'
   | 'heaters_off'
   | 'ai_failure'
+  | 'idle_off'
   | 'paused'
   | 'resumed'
   | 'info';

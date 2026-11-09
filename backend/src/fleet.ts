@@ -15,6 +15,14 @@ function deepMerge(target: any, source: any): any {
   return target;
 }
 
+function peripheralsFrom(c: any): LiveState['peripherals'] {
+  const out: NonNullable<LiveState['peripherals']> = {};
+  const v = (k: string) => (typeof c[k]?.value === 'number' ? c[k].value : undefined);
+  if (v('output_pin LED') !== undefined) out.light = v('output_pin LED');
+  for (const f of ['fan0', 'fan1', 'fan2'] as const) if (v(`output_pin ${f}`) !== undefined) out[f] = v(`output_pin ${f}`);
+  return out;
+}
+
 function mapState(klippyPrintState: string | undefined, online: boolean): PrintState {
   if (!online) return 'offline';
   switch (klippyPrintState) {
@@ -79,6 +87,9 @@ export class Fleet extends EventEmitter {
     });
     client.on('status', (status: any) => {
       deepMerge(entry.cache, status);
+      // motion_report updates several times a second while moving; it only feeds
+      // sample(), so don't rebuild/broadcast live state for it.
+      if (Object.keys(status || {}).every(k => k === 'motion_report')) return;
       this.recompute(p.id);
     });
 
@@ -125,6 +136,7 @@ export class Fleet extends EventEmitter {
       filamentDetected,
       ...this.vendorFields(entry),
       ai: entry.ai ?? null,
+      peripherals: peripheralsFrom(c),
       updatedAt: Date.now(),
     };
     if (next.state === 'error' && next.stateMessage) {
@@ -149,6 +161,19 @@ export class Fleet extends EventEmitter {
   private emitState(id: number) {
     const e = this.entries.get(id);
     if (e) this.emit('state', e.state);
+  }
+
+  /** Instantaneous hotend/motion readings for the dataset (jam-detection research). */
+  sample(id: number): { extruderPower: number | null; extruderVelocity: number | null; z: number | null; fan0: number | null } | null {
+    const c = this.entries.get(id)?.cache;
+    if (!c) return null;
+    const num = (v: any) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+    return {
+      extruderPower: num(c.extruder?.power),
+      extruderVelocity: num(c.motion_report?.live_extruder_velocity),
+      z: num(c.motion_report?.live_position?.[2]),
+      fan0: num(c['output_pin fan0']?.value),
+    };
   }
 
   /** Attach the latest AI verdict to a printer's live state (pushed to dashboards). */

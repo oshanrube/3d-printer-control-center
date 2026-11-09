@@ -5,6 +5,9 @@ import type { Printer } from './types.js';
 // Print control macros (pause/resume/cancel) can run for minutes before Moonraker replies.
 const ACTION_TIMEOUT_MS = 10 * 60_000;
 
+// Light + switchable fans on Creality K1/K1C/K2 (fan0 part cooling, fan1 side, fan2 chamber/exhaust).
+export const PERIPHERAL_OBJECTS = ['output_pin LED', 'output_pin fan0', 'output_pin fan1', 'output_pin fan2'];
+
 type Pending = { resolve: (v: any) => void; reject: (e: any) => void; timer: NodeJS.Timeout };
 
 /**
@@ -21,6 +24,7 @@ export class MoonrakerClient extends EventEmitter {
   private reconnectTimer?: NodeJS.Timeout;
   private stopped = false;
   private subscribedSensors: string[] = [];
+  peripheralObjects: string[] = [];
   readonly host: string;
   readonly port: number;
   connected = false;
@@ -125,6 +129,9 @@ export class MoonrakerClient extends EventEmitter {
       const objs: string[] = list?.objects || [];
       this.subscribedSensors = objs.filter(o =>
         o.startsWith('filament_switch_sensor') || o.startsWith('filament_motion_sensor'));
+      // Creality K-series light and fans (plain output pins). Automatic fans
+      // (heater_fan / temperature_fan) are deliberately not included.
+      this.peripheralObjects = PERIPHERAL_OBJECTS.filter(o => objs.includes(o));
     } catch { /* sensors optional */ }
 
     const objects: Record<string, null> = {
@@ -132,6 +139,9 @@ export class MoonrakerClient extends EventEmitter {
       display_status: null, virtual_sdcard: null, idle_timeout: null,
     };
     for (const s of this.subscribedSensors) objects[s] = null;
+    for (const p of this.peripheralObjects) objects[p] = null;
+    // Live commanded extrusion speed + Z, sampled for the dataset (not part of LiveState).
+    objects['motion_report'] = null;
 
     const res = await this.rpc('printer.objects.subscribe', { objects });
     if (res?.status) this.emit('status', res.status); // initial snapshot
@@ -144,6 +154,7 @@ export class MoonrakerClient extends EventEmitter {
       display_status: null, virtual_sdcard: null,
     };
     for (const s of this.subscribedSensors) objects[s] = null;
+    for (const p of this.peripheralObjects) objects[p] = null;
     const res = await this.rpc('printer.objects.query', { objects });
     if (res?.status) this.emit('status', res.status);
   }

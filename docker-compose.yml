@@ -18,6 +18,7 @@ services:
       # - AUTO_PAUSE_RUNOUT=1
       # - AUTO_PAUSE_ERROR=1
       # - STALL_MINUTES=8
+      # - IDLE_OFF_MIN=10        # light + switchable fans off after this long idle (0 = never)
       # - DATASET_SNAPSHOT_SEC=20
       - VAPID_SUBJECT=${VAPID_SUBJECT:-mailto:admin@local}
       # AI failure detection. Secrets live in ./.env (gitignored).

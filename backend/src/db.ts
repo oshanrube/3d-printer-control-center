@@ -95,6 +95,16 @@ CREATE TABLE IF NOT EXISTS ai_checks (
 CREATE INDEX IF NOT EXISTS idx_ai_checks_printer ON ai_checks(printer_id, t);
 `);
 
+// Telemetry columns for jam detection research: heater power vs commanded flow.
+{
+  const cols = new Set((db.prepare('PRAGMA table_info(telemetry)').all() as any[]).map(c => c.name));
+  if (!cols.has('extruder_power')) db.exec(`ALTER TABLE telemetry ADD COLUMN extruder_power REAL`);       // mean heater PWM 0-1 over the interval
+  if (!cols.has('extruder_velocity')) db.exec(`ALTER TABLE telemetry ADD COLUMN extruder_velocity REAL`); // mean commanded filament speed, mm/s
+  if (!cols.has('z')) db.exec(`ALTER TABLE telemetry ADD COLUMN z REAL`);
+  if (!cols.has('fan0')) db.exec(`ALTER TABLE telemetry ADD COLUMN fan0 REAL`);                           // part-cooling fan 0-1
+  if (!cols.has('samples')) db.exec(`ALTER TABLE telemetry ADD COLUMN samples INTEGER`);
+}
+
 // Columns added after ai_checks first shipped.
 {
   const cols = new Set((db.prepare('PRAGMA table_info(ai_checks)').all() as any[]).map(c => c.name));
@@ -205,20 +215,48 @@ export const printsRepo = {
     progress: number; bedTemp: number; bedTarget: number; extruderTemp: number;
     extruderTarget: number; printDuration: number; filamentDetected: boolean | null | undefined;
     snapshot?: string | null;
+    extruderPower?: number | null; extruderVelocity?: number | null; z?: number | null; fan0?: number | null; samples?: number | null;
   }) {
     db.prepare(
-      `INSERT INTO telemetry (print_id, t, progress, bed_temp, bed_target, extruder_temp, extruder_target, print_duration, filament_detected, snapshot)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO telemetry (print_id, t, progress, bed_temp, bed_target, extruder_temp, extruder_target, print_duration, filament_detected, snapshot,
+                              extruder_power, extruder_velocity, z, fan0, samples)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(printId, Date.now(), s.progress, s.bedTemp, s.bedTarget, s.extruderTemp, s.extruderTarget,
-          s.printDuration, s.filamentDetected == null ? null : (s.filamentDetected ? 1 : 0), s.snapshot ?? null);
+          s.printDuration, s.filamentDetected == null ? null : (s.filamentDetected ? 1 : 0), s.snapshot ?? null,
+          s.extruderPower ?? null, s.extruderVelocity ?? null, s.z ?? null, s.fan0 ?? null, s.samples ?? null);
   },
   recent(limit = 50) {
     return db.prepare('SELECT * FROM prints ORDER BY id DESC LIMIT ?').all(limit);
   },
   /** The print currently being tracked on a printer (not yet ended), if any. */
-  open(printerId: number): { id: number; snapshot_dir: string | null } | undefined {
-    return db.prepare('SELECT id, snapshot_dir FROM prints WHERE printer_id = ? AND ended_at IS NULL ORDER BY id DESC LIMIT 1')
+  open(printerId: number): { id: number; snapshot_dir: string | null; filename: string | null } | undefined {
+    return db.prepare('SELECT id, snapshot_dir, filename FROM prints WHERE printer_id = ? AND ended_at IS NULL ORDER BY id DESC LIMIT 1')
       .get(printerId) as any;
+  },
+  /**
+   * Older builds opened a new row on every backend restart mid-print, leaving the
+   * earlier fragments open forever. Close each open row that has a newer row on the
+   * same printer, as 'continued' (ended when the next fragment started), so the
+   * fragments of one print can be stitched back together for training.
+   */
+  closeFragments(): number {
+    const rows = db.prepare('SELECT id, printer_id, started_at, filename FROM prints WHERE ended_at IS NULL ORDER BY printer_id, id').all() as any[];
+    let n = 0;
+    for (const r of rows) {
+      const next = db.prepare('SELECT started_at, filename FROM prints WHERE printer_id = ? AND id > ? ORDER BY id LIMIT 1').get(r.printer_id, r.id) as any;
+      if (!next) continue;
+      // Same file next = the same print split by a restart; otherwise a separate print whose end we missed.
+      const outcome = next.filename === r.filename ? 'continued' : 'unknown';
+      db.prepare(`UPDATE prints SET ended_at = ?, outcome = ?, duration_sec = ? WHERE id = ?`)
+        .run(next.started_at, outcome, Math.round((next.started_at - r.started_at) / 1000), r.id);
+      n++;
+    }
+    return n;
+  },
+  /** End every other open row on a printer (a new print started, so they're over). */
+  closeOthers(printerId: number, keepId: number, outcome = 'unknown') {
+    db.prepare('UPDATE prints SET ended_at = ?, outcome = ? WHERE printer_id = ? AND ended_at IS NULL AND id != ?')
+      .run(Date.now(), outcome, printerId, keepId);
   },
 };
 

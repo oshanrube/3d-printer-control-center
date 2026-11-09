@@ -23,12 +23,16 @@ interface Track {
   heatOffAt?: number;           // when we sent TURN_OFF_HEATERS
   heatOffFailed?: boolean;
   vendorBusySince?: number;     // firmware pre-print phase started (Klipper not printing yet)
+  idleOnSince?: Record<string, number>; // light/fan -> when it was first seen on while idle
+  acc?: { n: number; power: number; nPower: number; vel: number; nVel: number; z: number | null; fan0: number | null };
   inPrint?: boolean;            // we've seen this print running (printing/paused)
   lastKlipperError?: string;    // last Klipper error already alerted
   faultAlerted?: boolean;       // current Creality fault was alerted (not a mirror of a Klipper error)
 }
 
 const FAULT_SETTLE_MS = 5000;
+
+const FAN_NAMES: Record<string, string> = { fan0: 'the part-cooling fan', fan1: 'the side fan', fan2: 'the chamber fan' };
 
 // The firmware's pre-print phase (heat, self-test, levelling) never legitimately runs
 // this long; past it, a "busy" firmware with no print is treated as stuck.
@@ -51,7 +55,10 @@ export class Engine {
   start() {
     this.fleet.on('state', (s: LiveState) => this.onState(s));
     // Heater watchdog also runs on a timer, in case a printer goes quiet.
-    setInterval(() => { for (const s of this.fleet.getStates()) this.checkHeaters(s); }, 30_000);
+    setInterval(() => { for (const s of this.fleet.getStates()) { this.checkHeaters(s); this.checkIdlePeripherals(s); } }, 30_000);
+    setInterval(() => this.sampleMotion(), 5_000);
+    const closed = printsRepo.closeFragments();
+    if (closed) console.log(`[engine] closed ${closed} split print fragment(s) as 'continued'`);
   }
 
   private track(id: number): Track {
@@ -108,10 +115,11 @@ export class Engine {
       if (active && !t.inPrint) {
         t.inPrint = true;
         // A real start: we saw the printer online and idle just before.
-        const sawStart = !!prev && prev.online && prev.state !== 'printing' && prev.state !== 'paused';
+        // ('offline' is our own placeholder right after connecting, never a real Klipper state.)
+        const sawStart = !!prev && prev.online && !['printing', 'paused', 'offline'].includes(prev.state);
         if (s.state === 'printing' && sawStart)
           mk('print_started', 'info', `${name} started a print`, `${s.filename || 'A print'} started.`);
-        if (!t.printId) this.startPrint(s);   // also covers joining a print already in progress
+        if (!t.printId) this.startPrint(s, sawStart);   // also covers joining a print already in progress
       } else if (t.inPrint && !active) {
         t.inPrint = false;
         if (s.state === 'complete') {
@@ -192,7 +200,44 @@ export class Engine {
     }
 
     this.checkHeaters(s);
+    this.checkIdlePeripherals(s);
     t.prev = s;
+  }
+
+  /**
+   * Light + switchable fans: switch off anything that has been on for IDLE_OFF_MIN
+   * while nothing is printing. Timed per device, so a light turned on later still
+   * gets its full time. Uses Creality's own macros (M107 also clears the fan-enable
+   * pin). Automatic hotend/chamber fans are never touched.
+   */
+  private checkIdlePeripherals(s: LiveState) {
+    if (config.idleOffMin <= 0) return;
+    const t = this.track(s.printerId);
+    const on = t.idleOnSince ??= {};
+    const now = Date.now();
+    const preprintActive = !!s.vendorBusy && s.state !== 'printing'
+      && (!t.vendorBusySince || now - t.vendorBusySince < MAX_PREPRINT_MS);
+    const idle = s.online && s.state !== 'printing' && s.state !== 'paused' && !preprintActive;
+    const p = s.peripherals || {};
+    const due: string[] = [];
+    for (const key of ['light', 'fan0', 'fan1', 'fan2'] as const) {
+      if (!idle || !((p[key] ?? 0) > 0)) { delete on[key]; continue; }
+      on[key] ??= now;
+      if (now - on[key] >= config.idleOffMin * 60_000) due.push(key);
+    }
+    if (!due.length) return;
+    for (const k of due) on[k] = now;   // if it's still on afterwards, try again one interval later
+    const client = this.fleet.client(s.printerId);
+    if (!client) return;
+    const script = due.map(k => (k === 'light' ? 'SET_PIN PIN=LED VALUE=0' : `M107 P${k.slice(3)}`)).join('\n');
+    const what = [due.includes('light') ? 'the light' : '', ...due.filter(k => k !== 'light').map(k => FAN_NAMES[k])]
+      .filter(Boolean).join(' and ').replace(/ and (?=.* and )/g, ', ');
+    const name = this.printerName(s.printerId);
+    client.gcode(script)
+      .then(() => this.emit({ printerId: s.printerId, printerName: name, type: 'idle_off', severity: 'info',
+        title: `💡 ${name}: switched off ${what}`, message: `Nothing has been printing for ${config.idleOffMin}+ min, so ${what} ${due.length > 1 ? 'were' : 'was'} switched off.`,
+        filename: null, actionTaken: 'switched off' }))
+      .catch((e: any) => console.warn(`[engine] couldn't switch off ${what} on ${name}: ${e?.message || e}`));
   }
 
   /**
@@ -250,14 +295,27 @@ export class Engine {
   }
 
   // ---- Dataset capture ----
-  private startPrint(s: LiveState) {
+  /**
+   * Begin dataset capture. `fresh` = we saw the print start. When joining a print
+   * already running (backend restart), continue its existing open row instead of
+   * splitting it into a new one.
+   */
+  private startPrint(s: LiveState, fresh = true) {
     const t = this.track(s.printerId);
     if (t.printId) this.endPrint(s.printerId, 'unknown'); // safety
-    const dir = join('snapshots', `p${s.printerId}_${Date.now()}`);
-    const abs = join(config.dataDir, dir);
-    try { mkdirSync(abs, { recursive: true }); } catch { /* ignore */ }
-    t.printId = printsRepo.start(s.printerId, s.filename ?? null, dir);
-    t.snapshotDir = dir;
+    const open = printsRepo.open(s.printerId);
+    if (!fresh && open && open.filename === (s.filename ?? null) && open.snapshot_dir) {
+      t.printId = open.id;
+      t.snapshotDir = open.snapshot_dir;
+      try { mkdirSync(join(config.dataDir, open.snapshot_dir), { recursive: true }); } catch { /* ignore */ }
+    } else {
+      const dir = join('snapshots', `p${s.printerId}_${Date.now()}`);
+      try { mkdirSync(join(config.dataDir, dir), { recursive: true }); } catch { /* ignore */ }
+      t.printId = printsRepo.start(s.printerId, s.filename ?? null, dir);
+      t.snapshotDir = dir;
+      printsRepo.closeOthers(s.printerId, t.printId);   // anything else still open is over
+    }
+    t.acc = undefined;
     if (config.datasetEnabled) {
       t.captureTimer = setInterval(() => this.capture(s.printerId), config.datasetSnapshotIntervalSec * 1000);
     }
@@ -277,11 +335,30 @@ export class Engine {
         writeFileSync(join(config.dataDir, t.snapshotDir, snapName), shot.body);
       }
     } catch { /* snapshot optional */ }
+    const a = t.acc; t.acc = undefined;
+    const avg = (sum: number, n: number) => (n ? sum / n : null);
     printsRepo.addTelemetry(t.printId, {
       progress: st.progress, bedTemp: st.bedTemp, bedTarget: st.bedTarget,
       extruderTemp: st.extruderTemp, extruderTarget: st.extruderTarget,
       printDuration: st.printDuration, filamentDetected: st.filamentDetected, snapshot: snapName,
+      extruderPower: a ? avg(a.power, a.nPower) : null, extruderVelocity: a ? avg(a.vel, a.nVel) : null,
+      z: a?.z ?? null, fan0: a?.fan0 ?? null, samples: a?.n ?? 0,
     });
+  }
+
+  /** Every 5 s while a print is tracked: accumulate heater power / commanded flow for the next telemetry row. */
+  private sampleMotion() {
+    for (const [id, t] of this.tracks) {
+      if (!t.printId) continue;
+      const v = this.fleet.sample(id);
+      if (!v) continue;
+      const a = t.acc ??= { n: 0, power: 0, nPower: 0, vel: 0, nVel: 0, z: null, fan0: null };
+      a.n++;
+      if (v.extruderPower !== null) { a.power += v.extruderPower; a.nPower++; }
+      if (v.extruderVelocity !== null) { a.vel += Math.max(0, v.extruderVelocity); a.nVel++; }
+      if (v.z !== null) a.z = v.z;
+      if (v.fan0 !== null) a.fan0 = v.fan0;
+    }
   }
 
   private endPrint(printerId: number, outcome: string) {
