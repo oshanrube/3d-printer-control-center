@@ -46,7 +46,7 @@ const stateLabel: Record<string, string> = {
 const evIcon: Record<string, string> = {
   print_finished: '✅', print_cancelled: '🛑', filament_runout: '🧵', klipper_error: '⚠️',
   printer_offline: '📴', printer_online: '🔌', stall_suspected: '⏳', print_started: '▶️', paused: '⏸️', info: 'ℹ️',
-  printer_fault: '⚠️', fault_cleared: '✔️', heaters_idle: '🔥', heaters_off: '🧯', ai_failure: '🤖', idle_off: '💡',
+  printer_fault: '⚠️', fault_cleared: '✔️', heaters_idle: '🔥', heaters_off: '🧯', ai_failure: '🤖', idle_off: '💡', jam_suspected: '🧵',
 };
 
 /* ---------- camera (snapshot polling via backend) ---------- */

@@ -199,6 +199,11 @@ export class Fleet extends EventEmitter {
     return 'klipper';
   }
 
+  /** Printer model as reported by Creality's firmware feed (e.g. "K1C", "F008"), if known. */
+  model(id: number): string | null {
+    return this.entries.get(id)?.vendor.status?.model || null;
+  }
+
   /** Instantaneous hotend/motion readings for the dataset (jam-detection research). */
   sample(id: number): { extruderPower: number | null; extruderVelocity: number | null; z: number | null; fan0: number | null } | null {
     const c = this.entries.get(id)?.cache;

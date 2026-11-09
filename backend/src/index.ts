@@ -6,6 +6,7 @@ import { Engine } from './engine.js';
 import { buildServer } from './server.js';
 import { relay } from './webrtc-relay.js';
 import { AiAnalyzer } from './ai-analyzer.js';
+import { JamDetector } from './jam-detector.js';
 
 function seedIfEmpty() {
   if (printersRepo.all().length > 0) return;
@@ -37,6 +38,8 @@ async function main() {
   fleet.start();
   aiRef.current = new AiAnalyzer(fleet, e => engine.report(e));
   aiRef.current.start();
+  const jam = new JamDetector(fleet, e => engine.report(e));
+  if (config.jamDetection) jam.start();
 
   await app.listen({ host: config.host, port: config.port });
   console.log(`[server] listening on http://${config.host}:${config.port}`);
@@ -45,6 +48,7 @@ async function main() {
     console.log('\n[server] shutting down...');
     fleet.stop();
     aiRef.current?.stop();
+    jam.stop();
     try { await relay.stop(); } catch { /* ignore */ }
     try { await app.close(); } catch { /* ignore */ }
     process.exit(0);

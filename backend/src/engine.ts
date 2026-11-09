@@ -43,7 +43,7 @@ const MAX_PREPRINT_MS = 60 * 60_000;
 const PUSH_FOR: Partial<Record<EventType, boolean>> = {
   print_finished: true, print_cancelled: true, filament_runout: true,
   klipper_error: true, printer_offline: true, stall_suspected: true,
-  printer_fault: true, heaters_idle: true, heaters_off: true, ai_failure: true,
+  printer_fault: true, heaters_idle: true, heaters_off: true, ai_failure: true, jam_suspected: true,
 };
 
 export class Engine {
@@ -112,7 +112,9 @@ export class Engine {
     // Only announce a start/finish we actually observed. `inPrint` survives
     // reconnects and backend restarts don't set it, so neither can replay a
     // finished print or re-announce a running one.
-    if (s.online) {
+    // ('offline' while online is our connect-time placeholder before the first real
+    // status arrives: it says nothing about the print, so don't treat it as "ended".)
+    if (s.online && s.state !== 'offline') {
       const active = s.state === 'printing' || s.state === 'paused';
       if (active && !t.inPrint) {
         t.inPrint = true;

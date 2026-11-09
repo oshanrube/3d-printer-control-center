@@ -253,6 +253,11 @@ export const printsRepo = {
     }
     return n;
   },
+  /** Heater power / target / part fan rows of a print since `t` (jam detection). */
+  powerSince(printId: number, t: number): { t: number; power: number | null; target: number | null; fan0: number | null }[] {
+    return db.prepare(`SELECT t, extruder_power AS power, extruder_target AS target, fan0 FROM telemetry
+                       WHERE print_id = ? AND t >= ? AND samples > 0 ORDER BY t`).all(printId, t) as any;
+  },
   /** End every other open row on a printer (a new print started, so they're over). */
   closeOthers(printerId: number, keepId: number, outcome = 'unknown') {
     db.prepare('UPDATE prints SET ended_at = ?, outcome = ? WHERE printer_id = ? AND ended_at IS NULL AND id != ?')

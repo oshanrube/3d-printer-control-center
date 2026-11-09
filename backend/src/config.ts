@@ -29,6 +29,8 @@ export const config = {
   idleOffMin: parseInt(process.env.IDLE_OFF_MIN || '10', 10),
   // Switch the light on when a print starts / the printer starts preparing one.
   lightOnPrint: (process.env.LIGHT_ON_PRINT ?? '1') === '1',
+  // "Possible jam / printing in air" warnings from hotend heater power (jam-detector.ts).
+  jamDetection: (process.env.JAM_DETECTION ?? '1') === '1',
 
   // Stage 1 failure detection: Obico's open-source failure detector (ml_api) on bc250.
   // Hyperparameters are Obico's own (FD_1ST_GEN_PARAMS), tuned for one frame per 10 s.

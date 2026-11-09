@@ -75,6 +75,7 @@ export type EventType =
   | 'heaters_idle'
   | 'heaters_off'
   | 'ai_failure'
+  | 'jam_suspected'
   | 'idle_off'
   | 'paused'
   | 'resumed'
