@@ -24,6 +24,22 @@ export const config = {
   idleHeaterAlertMin: parseInt(process.env.IDLE_HEATER_ALERT_MIN || '15', 10),
   // Turn heaters off after this long (0 = alert only). Never applied to a paused print.
   idleHeaterOffMin: parseInt(process.env.IDLE_HEATER_OFF_MIN || '45', 10),
+
+  // AI failure checks: camera snapshots sent to a vision model (llama.cpp server,
+  // OpenAI-compatible API) during prints. Active when AI_API_KEY is set, or AI_ENABLED=1.
+  ai: {
+    baseUrl: (process.env.AI_BASE_URL || 'http://10.0.68.30:8888').replace(/\/+$/, ''),
+    apiKey: process.env.AI_API_KEY || '',
+    model: process.env.AI_MODEL || '',
+    enabled: process.env.AI_ENABLED === '1' || (process.env.AI_ENABLED !== '0' && !!process.env.AI_API_KEY),
+    intervalSec: parseInt(process.env.AI_INTERVAL_SEC || '120', 10),       // per printer
+    minPrintMin: parseInt(process.env.AI_MIN_PRINT_MIN || '3', 10),        // skip the first minutes
+    timeoutSec: parseInt(process.env.AI_TIMEOUT_SEC || '120', 10),
+    alertConfidence: parseInt(process.env.AI_ALERT_CONFIDENCE || '75', 10),
+    failureStreak: parseInt(process.env.AI_FAILURE_STREAK || '2', 10),     // consecutive failures before alerting
+    autoPause: process.env.AI_AUTO_PAUSE === '1',                          // off by default: false positives
+    pauseConfidence: parseInt(process.env.AI_PAUSE_CONFIDENCE || '90', 10),
+  },
 };
 
 export type Config = typeof config;

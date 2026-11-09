@@ -11,6 +11,14 @@ export interface Printer {
   createdAt: number;
 }
 
+export interface AiVerdict {
+  assessment: 'success' | 'failure' | 'inconclusive';
+  confidence: number;         // 0-100
+  reason: string;
+  defects: string[];
+  at: number;                 // epoch ms
+}
+
 // Normalized live state we derive from Moonraker objects.
 export type PrintState =
   | 'offline'
@@ -41,6 +49,7 @@ export interface LiveState {
   fault?: { code: number; message: string; description: string } | null;
   vendorBusy?: boolean;       // firmware is running a job Klipper can't see yet (pre-print heat/level)
   errorText?: string;         // readable Klipper error (when state === 'error')
+  ai?: AiVerdict | null;      // latest vision-model check of this printer's camera (during prints)
   updatedAt: number;
 }
 
@@ -57,6 +66,7 @@ export type EventType =
   | 'fault_cleared'
   | 'heaters_idle'
   | 'heaters_off'
+  | 'ai_failure'
   | 'paused'
   | 'resumed'
   | 'info';

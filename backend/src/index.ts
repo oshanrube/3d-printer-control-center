@@ -5,6 +5,7 @@ import { Fleet } from './fleet.js';
 import { Engine } from './engine.js';
 import { buildServer } from './server.js';
 import { relay } from './webrtc-relay.js';
+import { AiAnalyzer } from './ai-analyzer.js';
 
 function seedIfEmpty() {
   if (printersRepo.all().length > 0) return;
@@ -29,10 +30,13 @@ async function main() {
   await relay.init();  // launches headless Chromium for WebRTC cameras (no-op if unavailable)
 
   const fleet = new Fleet();
-  const { app, broadcastEvent } = buildServer(fleet);
+  const aiRef: { current?: AiAnalyzer } = {};
+  const { app, broadcastEvent } = buildServer(fleet, aiRef);
   const engine = new Engine(fleet, broadcastEvent);
   engine.start();
   fleet.start();
+  aiRef.current = new AiAnalyzer(fleet, e => engine.report(e));
+  aiRef.current.start();
 
   await app.listen({ host: config.host, port: config.port });
   console.log(`[server] listening on http://${config.host}:${config.port}`);
@@ -40,6 +44,7 @@ async function main() {
   const shutdown = async () => {
     console.log('\n[server] shutting down...');
     fleet.stop();
+    aiRef.current?.stop();
     try { await relay.stop(); } catch { /* ignore */ }
     try { await app.close(); } catch { /* ignore */ }
     process.exit(0);

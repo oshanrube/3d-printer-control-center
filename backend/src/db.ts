@@ -74,6 +74,25 @@ CREATE TABLE IF NOT EXISTS telemetry (
   snapshot TEXT               -- filename of captured frame at this sample, if any
 );
 CREATE INDEX IF NOT EXISTS idx_telemetry_print ON telemetry(print_id);
+
+-- Vision-model verdicts on print snapshots (ai-analyzer.ts). Joined with prints.outcome
+-- these become labelled training/evaluation data.
+CREATE TABLE IF NOT EXISTS ai_checks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  printer_id INTEGER NOT NULL,
+  print_id INTEGER,            -- prints.id when a tracked print was running
+  t INTEGER NOT NULL,          -- epoch ms
+  snapshot TEXT,               -- path relative to the data dir
+  assessment TEXT,             -- success | failure | inconclusive | error
+  confidence INTEGER,          -- 0-100
+  reason TEXT,
+  defects TEXT,                -- JSON array
+  progress REAL,
+  model TEXT,
+  latency_ms INTEGER,
+  raw TEXT                     -- raw model reply (or error), for debugging
+);
+CREATE INDEX IF NOT EXISTS idx_ai_checks_printer ON ai_checks(printer_id, t);
 `);
 
 // ---- Printers ----
@@ -187,5 +206,33 @@ export const printsRepo = {
   },
   recent(limit = 50) {
     return db.prepare('SELECT * FROM prints ORDER BY id DESC LIMIT ?').all(limit);
+  },
+  /** The print currently being tracked on a printer (not yet ended), if any. */
+  open(printerId: number): { id: number; snapshot_dir: string | null } | undefined {
+    return db.prepare('SELECT id, snapshot_dir FROM prints WHERE printer_id = ? AND ended_at IS NULL ORDER BY id DESC LIMIT 1')
+      .get(printerId) as any;
+  },
+};
+
+// ---- AI verdicts ----
+export interface AiCheck {
+  printerId: number; printId: number | null; t: number; snapshot: string | null;
+  assessment: string; confidence: number | null; reason: string | null; defects: string[];
+  progress: number | null; model: string | null; latencyMs: number | null; raw: string | null;
+}
+
+export const aiRepo = {
+  add(c: AiCheck) {
+    db.prepare(
+      `INSERT INTO ai_checks (printer_id, print_id, t, snapshot, assessment, confidence, reason, defects, progress, model, latency_ms, raw)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(c.printerId, c.printId, c.t, c.snapshot, c.assessment, c.confidence, c.reason,
+          JSON.stringify(c.defects || []), c.progress, c.model, c.latencyMs, c.raw);
+  },
+  recent(printerId?: number, limit = 50) {
+    const rows = printerId
+      ? db.prepare('SELECT * FROM ai_checks WHERE printer_id = ? ORDER BY id DESC LIMIT ?').all(printerId, limit)
+      : db.prepare('SELECT * FROM ai_checks ORDER BY id DESC LIMIT ?').all(limit);
+    return rows.map((r: any) => ({ ...r, defects: (() => { try { return JSON.parse(r.defects || '[]'); } catch { return []; } })() }));
   },
 };

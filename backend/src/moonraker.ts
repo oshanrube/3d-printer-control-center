@@ -2,6 +2,9 @@ import { EventEmitter } from 'node:events';
 import WebSocket from 'ws';
 import type { Printer } from './types.js';
 
+// Print control macros (pause/resume/cancel) can run for minutes before Moonraker replies.
+const ACTION_TIMEOUT_MS = 10 * 60_000;
+
 type Pending = { resolve: (v: any) => void; reject: (e: any) => void; timer: NodeJS.Timeout };
 
 /**
@@ -148,9 +151,11 @@ export class MoonrakerClient extends EventEmitter {
   get sensorNames() { return this.subscribedSensors; }
 
   // ---- Control actions ----
-  pause()  { return this.rpc('printer.print.pause', {}); }
-  resume() { return this.rpc('printer.print.resume', {}); }
-  cancel() { return this.rpc('printer.print.cancel', {}); }
+  // Moonraker only replies once the macro finishes, and Creality's PAUSE/CANCEL
+  // macros park the head and wait for cooling, which can take minutes.
+  pause()  { return this.rpc('printer.print.pause', {}, ACTION_TIMEOUT_MS); }
+  resume() { return this.rpc('printer.print.resume', {}, ACTION_TIMEOUT_MS); }
+  cancel() { return this.rpc('printer.print.cancel', {}, ACTION_TIMEOUT_MS); }
   emergencyStop() { return this.rpc('printer.emergency_stop', {}); }
   gcode(script: string) { return this.rpc('printer.gcode.script', { script }); }
 }

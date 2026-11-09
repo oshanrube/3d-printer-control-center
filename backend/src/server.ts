@@ -4,14 +4,19 @@ import fastifyWebsocket from '@fastify/websocket';
 import { existsSync } from 'node:fs';
 import type { WebSocket } from 'ws';
 import { config } from './config.js';
-import { printersRepo, eventsRepo, printsRepo } from './db.js';
+import { printersRepo, eventsRepo, printsRepo, aiRepo } from './db.js';
+import type { AiAnalyzer } from './ai-analyzer.js';
 import { getPublicKey, subscribe, unsubscribe, sendPush } from './push.js';
 import { fetchSnapshot } from './camera.js';
 import { scanSubnet } from './scan.js';
 import type { Fleet } from './fleet.js';
 import type { LiveState, PrinterEvent } from './types.js';
+import { describeKlipperError } from './errors.js';
 
-export function buildServer(fleet: Fleet) {
+// How long a pause/resume/cancel request waits for the printer before answering "accepted".
+const ACTION_QUICK_MS = 3000;
+
+export function buildServer(fleet: Fleet, ai: { current?: AiAnalyzer } = {}) {
   const app = Fastify({ logger: false });
   app.register(fastifyWebsocket);
 
@@ -79,9 +84,21 @@ export function buildServer(fleet: Fleet) {
     app.post(`/api/printers/:id/${action}`, async (req, reply) => {
       const id = Number((req.params as any).id);
       const client = fleet.client(id);
-      if (!client) return reply.code(404).send({ error: 'not connected' });
-      try { await client[action](); return { ok: true }; }
-      catch (e: any) { return reply.code(502).send({ error: e?.message || 'action failed' }); }
+      if (!client) return reply.code(404).send({ error: 'Printer is not connected.' });
+      // Creality's macros (park, cool down) can take minutes before Moonraker replies.
+      // Wait briefly for a quick rejection; otherwise report it as accepted and let the
+      // live state show the outcome.
+      const run = client[action]();
+      const quick = await Promise.race([
+        run.then(() => ({ done: true as const }), (e: any) => ({ error: e?.message || String(e) })),
+        new Promise<{ pending: true }>(r => setTimeout(() => r({ pending: true }), ACTION_QUICK_MS)),
+      ]);
+      if ('done' in quick) return { ok: true };
+      if ('pending' in quick) {
+        run.catch((e: any) => console.warn(`[action] ${action} on printer ${id} failed later: ${e?.message || e}`));
+        return reply.code(202).send({ ok: true, pending: true });
+      }
+      return reply.code(409).send({ error: describeKlipperError(quick.error).text || quick.error });
     });
   }
 
@@ -91,6 +108,13 @@ export function buildServer(fleet: Fleet) {
   });
 
   app.get('/api/prints', async () => printsRepo.recent(50));
+
+  // AI failure checks
+  app.get('/api/ai/status', async () => ai.current?.status ?? { enabled: false });
+  app.get('/api/ai/checks', async (req) => {
+    const q = req.query as any;
+    return aiRepo.recent(q?.printerId ? Number(q.printerId) : undefined, Math.min(500, Number(q?.limit) || 50));
+  });
 
   // Camera snapshot relay (backend reaches every printer)
   app.get('/api/camera/:id/snapshot', async (req, reply) => {
@@ -116,9 +140,14 @@ export function buildServer(fleet: Fleet) {
   app.get('/api/push/vapid', async () => ({ publicKey: getPublicKey() }));
   app.post('/api/push/subscribe', async (req) => { subscribe(req.body as any); return { ok: true }; });
   app.post('/api/push/unsubscribe', async (req) => { unsubscribe((req.body as any)?.endpoint); return { ok: true }; });
-  app.post('/api/push/test', async () => {
-    await sendPush({ title: 'Control Center', body: 'Test notification ✅', tag: 'test' });
-    return { ok: true };
+  app.post('/api/push/test', async (_req, reply) => {
+    const r = await sendPush({ title: 'Control Center', body: 'Test notification ✅', tag: 'test' });
+    if (r.total === 0) return reply.code(409).send({ ...r, error: 'No devices are subscribed to notifications.' });
+    if (r.sent === 0) {
+      const f = r.failures[0];
+      return reply.code(502).send({ ...r, error: `${f.service} rejected it${f.status ? ` (HTTP ${f.status})` : ''}: ${f.error}` });
+    }
+    return { ok: true, ...r };
   });
 
   // ---- Static frontend (SPA) ----

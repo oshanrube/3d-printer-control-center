@@ -20,6 +20,11 @@ services:
       # - STALL_MINUTES=8
       # - DATASET_SNAPSHOT_SEC=20
       - VAPID_SUBJECT=${VAPID_SUBJECT:-mailto:admin@local}
+      # AI failure checks (vision model on bc250). Put AI_API_KEY in ./.env to enable.
+      - AI_API_KEY=${AI_API_KEY:-}
+      - AI_BASE_URL=${AI_BASE_URL:-http://10.0.68.30:8888}
+      - AI_INTERVAL_SEC=${AI_INTERVAL_SEC:-120}
+      - AI_AUTO_PAUSE=${AI_AUTO_PAUSE:-0}
     volumes:
       - ./data:/data
 

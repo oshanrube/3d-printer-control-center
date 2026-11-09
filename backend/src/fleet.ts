@@ -3,7 +3,7 @@ import { MoonrakerClient } from './moonraker.js';
 import { CrealityClient, describeFault } from './creality.js';
 import { describeKlipperError } from './errors.js';
 import { printersRepo } from './db.js';
-import type { LiveState, Printer, PrintState } from './types.js';
+import type { AiVerdict, LiveState, Printer, PrintState } from './types.js';
 
 function deepMerge(target: any, source: any): any {
   if (source == null || typeof source !== 'object') return source;
@@ -30,6 +30,7 @@ function mapState(klippyPrintState: string | undefined, online: boolean): PrintS
 interface Entry {
   client: MoonrakerClient;
   vendor: CrealityClient; // Creality firmware feed (:9999): faults + pre-print phase
+  ai?: AiVerdict | null;  // latest vision-model verdict (set by ai-analyzer)
   cache: any;           // merged Moonraker status objects
   state: LiveState;
 }
@@ -123,6 +124,7 @@ export class Fleet extends EventEmitter {
       extruderTarget: ext.target ?? 0,
       filamentDetected,
       ...this.vendorFields(entry),
+      ai: entry.ai ?? null,
       updatedAt: Date.now(),
     };
     if (next.state === 'error' && next.stateMessage) {
@@ -147,6 +149,15 @@ export class Fleet extends EventEmitter {
   private emitState(id: number) {
     const e = this.entries.get(id);
     if (e) this.emit('state', e.state);
+  }
+
+  /** Attach the latest AI verdict to a printer's live state (pushed to dashboards). */
+  setAi(id: number, verdict: AiVerdict | null) {
+    const e = this.entries.get(id);
+    if (!e) return;
+    e.ai = verdict;
+    e.state = { ...e.state, ai: verdict, updatedAt: Date.now() };
+    this.emitState(id);
   }
 
   // ---- Public API ----

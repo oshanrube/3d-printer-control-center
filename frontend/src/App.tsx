@@ -29,7 +29,7 @@ const stateLabel: Record<string, string> = {
 const evIcon: Record<string, string> = {
   print_finished: '✅', print_cancelled: '🛑', filament_runout: '🧵', klipper_error: '⚠️',
   printer_offline: '📴', printer_online: '🔌', stall_suspected: '⏳', print_started: '▶️', paused: '⏸️', info: 'ℹ️',
-  printer_fault: '⚠️', fault_cleared: '✔️', heaters_idle: '🔥', heaters_off: '🧯',
+  printer_fault: '⚠️', fault_cleared: '✔️', heaters_idle: '🔥', heaters_off: '🧯', ai_failure: '🤖',
 };
 
 /* ---------- camera (snapshot polling via backend) ---------- */
@@ -68,7 +68,8 @@ function PrinterCard({ printer, onEdit }: { printer: Printer; onEdit: (p: Printe
   const act = async (a: 'pause' | 'resume' | 'cancel') => {
     if (busy.current) return; busy.current = true;
     try { if (a === 'cancel' && !confirm('Cancel this print?')) return; await api.action(printer.id, a); }
-    catch { alert('Action failed'); } finally { busy.current = false; }
+    catch (e: any) { alert(`Couldn't ${a} ${printer.name}: ${e?.message || e}`); }
+    finally { busy.current = false; }
   };
   return (
     <div class={`card ${st} ${!s?.online ? 'offline-dim' : ''}`}>
@@ -100,6 +101,13 @@ function PrinterCard({ printer, onEdit }: { printer: Printer; onEdit: (p: Printe
         </div>
       )}
       {s?.filamentDetected === false && <div class="muted" style="margin-top:8px;color:var(--st-offline)">🧵 Filament runout detected</div>}
+      {s?.ai && (st === 'printing' || st === 'paused') && (
+        <div class={`ai-line ai-${s.ai.assessment}`} title={[s.ai.reason, ...(s.ai.defects || [])].filter(Boolean).join(' · ')}>
+          🤖 {s.ai.assessment === 'success' ? 'Looks OK' : s.ai.assessment === 'failure' ? 'Possible failure' : 'Unsure'}
+          {' '}<span class="muted">({s.ai.confidence}%, {timeAgo(s.ai.at)})</span>
+          {s.ai.assessment !== 'success' && s.ai.reason && <div class="ai-reason">{s.ai.reason}</div>}
+        </div>
+      )}
       <Camera printer={printer} />
       {s?.online && (st === 'printing' || st === 'paused') && (
         <div class="actions">
@@ -212,7 +220,7 @@ export function App() {
     setPush(r);
     if (r === 'granted') {
       try { await api.testPush(); alert('Notifications are on. A test notification was sent to this device.'); }
-      catch { alert('Notifications are on, but sending the test notification failed.'); }
+      catch (e: any) { alert(`Notifications are on, but the test notification wasn't delivered: ${e?.message || e}`); }
     } else if (r === 'denied') alert('Notifications are blocked. Allow them for this site in your browser settings, then try again.');
     else if (r === 'unsupported') alert('This browser does not support push notifications.');
   };

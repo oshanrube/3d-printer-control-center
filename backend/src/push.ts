@@ -36,15 +36,30 @@ export interface PushPayload {
   url?: string;
 }
 
-export async function sendPush(payload: PushPayload) {
+export interface PushResult {
+  total: number;
+  sent: number;
+  failures: Array<{ service: string; status?: number; error: string }>;
+  removed: number; // expired subscriptions cleaned up
+}
+
+export async function sendPush(payload: PushPayload): Promise<PushResult> {
   const subs = pushRepo.all();
   const data = JSON.stringify(payload);
+  const result: PushResult = { total: subs.length, sent: 0, failures: [], removed: 0 };
   await Promise.all(subs.map(async (s) => {
+    let service = 'push service';
+    try { service = new URL(s.endpoint).host; } catch { /* keep default */ }
     try {
       await webpush.sendNotification(s as any, data);
+      result.sent++;
     } catch (err: any) {
-      const code = err?.statusCode;
-      if (code === 404 || code === 410) pushRepo.remove(s.endpoint); // gone
+      const status = err?.statusCode;
+      const error = String(err?.body || err?.message || err).trim().slice(0, 300);
+      if (status === 404 || status === 410) { pushRepo.remove(s.endpoint); result.removed++; } // subscription gone
+      result.failures.push({ service, status, error });
+      console.warn(`[push] ${service} rejected notification: ${status ?? ''} ${error}`);
     }
   }));
+  return result;
 }

@@ -37,7 +37,7 @@ const MAX_PREPRINT_MS = 60 * 60_000;
 const PUSH_FOR: Partial<Record<EventType, boolean>> = {
   print_finished: true, print_cancelled: true, filament_runout: true,
   klipper_error: true, printer_offline: true, stall_suspected: true,
-  printer_fault: true, heaters_idle: true, heaters_off: true,
+  printer_fault: true, heaters_idle: true, heaters_off: true, ai_failure: true,
 };
 
 export class Engine {
@@ -59,6 +59,9 @@ export class Engine {
     if (!t) { t = { lastProgress: 0, lastProgressAt: Date.now(), stallNotified: false }; this.tracks.set(id, t); }
     return t;
   }
+
+  /** Raise an event from another component (stored, broadcast, pushed per PUSH_FOR). */
+  report(e: Omit<PrinterEvent, 'createdAt'>) { return this.emit(e); }
 
   private async emit(e: Omit<PrinterEvent, 'createdAt'>) {
     const full: PrinterEvent = { ...e, createdAt: Date.now() };
