@@ -150,7 +150,7 @@ export function buildServer(fleet: Fleet, ai: { current?: AiAnalyzer } = {}, ref
     broadcast({ type: 'labels' });   // dashboards refresh their "to label" lists
     return { ok: true };
   });
-  // The good run's frame at this printer's current step (the Compare view).
+  // The successful run's frame at this printer's current step (the Compare view).
   app.get('/api/printers/:id/reference-frame', async (req, reply) => {
     const path = ref.current?.referenceFrame(Number((req.params as any).id));
     if (!path || !existsSync(path)) return reply.code(404).send();

@@ -153,15 +153,15 @@ function PrinterCard({ printer, onEdit, toLabel, onLabelled, onLater }: {
       )}
       {s?.reference && (st === 'printing' || st === 'paused') && (
         <div class={`ref-line ${s.reference.ok ? 'ok' : 'bad'}`}>
-          📐 {s.reference.ok ? 'Matches' : 'Differs from'} a good run {s.reference.samePrinter ? 'on this printer' : `on ${s.reference.refPrinterName}`}
-          {' '}<span class="muted">(diff {s.reference.score} / {s.reference.limit})</span>
+          📐 {s.reference.ok ? 'Matches' : 'Differs from'} a successful run {s.reference.samePrinter ? 'on this printer' : `on ${s.reference.refPrinterName}`}
+          {' '}<span class="muted">(diff {s.reference.score} / {s.reference.limit} · now {s.reference.progress}% · reference {s.reference.refProgress}%)</span>
           <button class="chip" style="margin-left:6px" onClick={() => setShowRef(!showRef)}>{showRef ? 'Hide' : 'Compare'}</button>
         </div>
       )}
       <Camera printer={printer} />
       {showRef && s?.reference && (
         <div class="ref-view">
-          <div class="muted">Good run {s.reference.samePrinter ? '(this printer)' : `on ${s.reference.refPrinterName}`} at the same step:</div>
+          <div class="muted">Successful run {s.reference.samePrinter ? '(this printer)' : `on ${s.reference.refPrinterName}`} at {s.reference.refProgress}% (this print was at {s.reference.progress}% when compared):</div>
           <img src={api.referenceFrameUrl(printer.id, s.reference.at)} alt="reference frame" />
         </div>
       )}

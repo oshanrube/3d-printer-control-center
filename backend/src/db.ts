@@ -181,13 +181,6 @@ export const eventsRepo = {
           e.filename ?? null, e.actionTaken ?? null, e.createdAt);
     return { ...e, id: Number(info.lastInsertRowid) };
   },
-  /** Time of the first failure warning on a printer within [from, to], if any. */
-  firstFailure(printerId: number, from: number, to: number): number | null {
-    const r = db.prepare(`SELECT min(created_at) AS t FROM events WHERE printer_id = ? AND created_at BETWEEN ? AND ?
-                          AND type IN ('ai_failure', 'jam_suspected', 'reference_mismatch', 'klipper_error', 'filament_runout')`)
-      .get(printerId, from, to) as any;
-    return r?.t ?? null;
-  },
   setPushResult(id: number, result: string) {
     db.prepare('UPDATE events SET push_result = ? WHERE id = ?').run(result.slice(0, 500), id);
   },
