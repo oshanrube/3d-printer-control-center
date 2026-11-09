@@ -121,3 +121,12 @@ main{margin-top:16px}
   .overview{width:100%;justify-content:space-between}
   .tile{flex:1;min-width:0;padding:6px 4px}
 }
+
+/* Creality firmware fault (e.g. error 521) */
+.fault-banner {
+  margin-top: 10px; padding: 8px 10px; border-radius: 10px; font-size: 13px; line-height: 1.35;
+  color: var(--st-offline);
+  background: color-mix(in srgb, var(--st-offline) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--st-offline) 35%, transparent);
+}
+.fault-banner .fault-heat { margin-top: 4px; font-weight: 600; }

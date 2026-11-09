@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { MoonrakerClient } from './moonraker.js';
+import { CrealityClient, describeFault } from './creality.js';
 import { printersRepo } from './db.js';
 import type { LiveState, Printer, PrintState } from './types.js';
 
@@ -27,6 +28,7 @@ function mapState(klippyPrintState: string | undefined, online: boolean): PrintS
 
 interface Entry {
   client: MoonrakerClient;
+  vendor: CrealityClient; // Creality firmware feed (:9999): faults + pre-print phase
   cache: any;           // merged Moonraker status objects
   state: LiveState;
 }
@@ -42,7 +44,7 @@ export class Fleet extends EventEmitter {
   }
 
   stop() {
-    for (const e of this.entries.values()) e.client.stop();
+    for (const e of this.entries.values()) { e.client.stop(); e.vendor.stop(); }
     this.entries.clear();
   }
 
@@ -56,8 +58,12 @@ export class Fleet extends EventEmitter {
 
   private spawn(p: Printer) {
     const client = new MoonrakerClient(p);
-    const entry: Entry = { client, cache: {}, state: this.blankState(p) };
+    const vendor = new CrealityClient(p);
+    const entry: Entry = { client, vendor, cache: {}, state: this.blankState(p) };
     this.entries.set(p.id, entry);
+
+    vendor.on('update', () => this.recompute(p.id));
+    vendor.start();
 
     client.on('open', () => {
       entry.state.online = true;
@@ -115,10 +121,20 @@ export class Fleet extends EventEmitter {
       extruderTemp: Math.round((ext.temperature ?? 0) * 10) / 10,
       extruderTarget: ext.target ?? 0,
       filamentDetected,
+      ...this.vendorFields(entry),
       updatedAt: Date.now(),
     };
     entry.state = next;
     this.emitState(id);
+  }
+
+  private vendorFields(entry: Entry): Pick<LiveState, 'fault' | 'vendorBusy'> {
+    const v = entry.vendor.status;
+    if (!v) return { fault: undefined, vendorBusy: false };
+    return {
+      fault: v.fault ? { code: v.fault.code, message: v.fault.message, description: describeFault(v.fault) } : null,
+      vendorBusy: v.state === 1 && !v.fault,
+    };
   }
 
   private emitState(id: number) {
@@ -136,9 +152,9 @@ export class Fleet extends EventEmitter {
     const wanted = new Map(printersRepo.all().filter(p => !p.disabled).map(p => [p.id, p]));
     for (const [id, e] of this.entries) {
       const p = wanted.get(id);
-      if (!p) { e.client.stop(); this.entries.delete(id); }
-      else if (p.ip !== e.client.printer.ip) { e.client.stop(); this.entries.delete(id); this.spawn(p); }
-      else { e.client.printer = p; }
+      if (!p) { e.client.stop(); e.vendor.stop(); this.entries.delete(id); }
+      else if (p.ip !== e.client.printer.ip) { e.client.stop(); e.vendor.stop(); this.entries.delete(id); this.spawn(p); }
+      else { e.client.printer = p; e.vendor.printer = p; }
     }
     for (const [id, p] of wanted) if (!this.entries.has(id)) this.spawn(p);
   }

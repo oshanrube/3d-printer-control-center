@@ -2,7 +2,9 @@ export interface LiveState {
   printerId: number; online: boolean; state: string; stateMessage?: string;
   filename?: string | null; progress: number; printDuration: number; totalDuration: number;
   etaSeconds?: number | null; bedTemp: number; bedTarget: number;
-  extruderTemp: number; extruderTarget: number; filamentDetected?: boolean | null; updatedAt: number;
+  extruderTemp: number; extruderTarget: number; filamentDetected?: boolean | null;
+  fault?: { code: number; message: string; description: string } | null; vendorBusy?: boolean;
+  updatedAt: number;
 }
 export interface Printer {
   id: number; name: string; ip: string; moonrakerPort: number;

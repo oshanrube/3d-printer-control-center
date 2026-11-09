@@ -20,6 +20,10 @@ export const config = {
   // Auto-pause toggles (engine actions)
   autoPauseOnRunout: (process.env.AUTO_PAUSE_RUNOUT ?? '1') === '1',
   autoPauseOnError: (process.env.AUTO_PAUSE_ERROR ?? '1') === '1',
+  // Idle-heater watchdog: heaters on while nothing is printing.
+  idleHeaterAlertMin: parseInt(process.env.IDLE_HEATER_ALERT_MIN || '15', 10),
+  // Turn heaters off after this long (0 = alert only). Never applied to a paused print.
+  idleHeaterOffMin: parseInt(process.env.IDLE_HEATER_OFF_MIN || '45', 10),
 };
 
 export type Config = typeof config;

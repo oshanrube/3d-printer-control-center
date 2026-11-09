@@ -152,4 +152,5 @@ export class MoonrakerClient extends EventEmitter {
   resume() { return this.rpc('printer.print.resume', {}); }
   cancel() { return this.rpc('printer.print.cancel', {}); }
   emergencyStop() { return this.rpc('printer.emergency_stop', {}); }
+  gcode(script: string) { return this.rpc('printer.gcode.script', { script }); }
 }

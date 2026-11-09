@@ -37,6 +37,9 @@ export interface LiveState {
   extruderTemp: number;
   extruderTarget: number;
   filamentDetected?: boolean | null; // from runout sensor if present
+  // From Creality's own firmware feed (:9999). undefined = feed unavailable.
+  fault?: { code: number; message: string; description: string } | null;
+  vendorBusy?: boolean;       // firmware is running a job Klipper can't see yet (pre-print heat/level)
   updatedAt: number;
 }
 
@@ -49,6 +52,10 @@ export type EventType =
   | 'printer_offline'
   | 'printer_online'
   | 'stall_suspected'
+  | 'printer_fault'
+  | 'fault_cleared'
+  | 'heaters_idle'
+  | 'heaters_off'
   | 'paused'
   | 'resumed'
   | 'info';

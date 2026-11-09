@@ -16,11 +16,22 @@ interface Track {
   lastProgressAt: number;
   stallNotified: boolean;
   lastFilament?: boolean | null;
+  lastFaultCode?: number;       // last Creality fault seen (0 = none, undefined = unknown)
+  heatIdleSince?: number;       // heaters on while nothing is printing, since
+  heatAlerted?: boolean;
+  heatOffAt?: number;           // when we sent TURN_OFF_HEATERS
+  heatOffFailed?: boolean;
+  vendorBusySince?: number;     // firmware pre-print phase started (Klipper not printing yet)
 }
+
+// The firmware's pre-print phase (heat, self-test, levelling) never legitimately runs
+// this long; past it, a "busy" firmware with no print is treated as stuck.
+const MAX_PREPRINT_MS = 60 * 60_000;
 
 const PUSH_FOR: Partial<Record<EventType, boolean>> = {
   print_finished: true, print_cancelled: true, filament_runout: true,
   klipper_error: true, printer_offline: true, stall_suspected: true,
+  printer_fault: true, heaters_idle: true, heaters_off: true,
 };
 
 export class Engine {
@@ -33,6 +44,8 @@ export class Engine {
 
   start() {
     this.fleet.on('state', (s: LiveState) => this.onState(s));
+    // Heater watchdog also runs on a timer, in case a printer goes quiet.
+    setInterval(() => { for (const s of this.fleet.getStates()) this.checkHeaters(s); }, 30_000);
   }
 
   private track(id: number): Track {
@@ -119,7 +132,75 @@ export class Engine {
       t.lastProgress = s.progress; t.lastProgressAt = Date.now(); t.stallNotified = false;
     }
 
+    // ---- Creality firmware faults (from :9999, invisible to Moonraker) ----
+    if (s.fault !== undefined) {
+      const code = s.fault?.code ?? 0;
+      if (code && code !== t.lastFaultCode) {
+        const heat = s.bedTarget > 0 || s.extruderTarget > 0
+          ? ` Heaters are still on (bed ${s.bedTarget}°C, nozzle ${s.extruderTarget}°C).` : '';
+        mk('printer_fault', 'critical', `⚠️ ${name}: error ${code}`, `${s.fault!.description}.${heat}`);
+      } else if (!code && t.lastFaultCode) {
+        mk('fault_cleared', 'info', `${name} error cleared`, `Error ${t.lastFaultCode} was cleared on the printer.`);
+      }
+      t.lastFaultCode = code;
+    }
+
+    this.checkHeaters(s);
     t.prev = s;
+  }
+
+  /**
+   * Idle-heater watchdog. Heaters on while nothing is printing (e.g. a print that
+   * halted in the firmware before reaching Klipper) -> alert, then turn them off.
+   * A paused print only gets the alert, so it can still be resumed.
+   */
+  private checkHeaters(s: LiveState) {
+    const t = this.track(s.printerId);
+    const now = Date.now();
+    const heating = s.online && (s.bedTarget > 0 || s.extruderTarget > 0);
+    const preprint = !!s.vendorBusy && s.state !== 'printing';
+    if (preprint) t.vendorBusySince ??= now; else t.vendorBusySince = undefined;
+    const active = s.state === 'printing' || (preprint && now - t.vendorBusySince! < MAX_PREPRINT_MS);
+    if (!heating || active) {
+      t.heatIdleSince = undefined; t.heatAlerted = false; t.heatOffAt = undefined; t.heatOffFailed = false;
+      return;
+    }
+    t.heatIdleSince ??= now;
+    const mins = (now - t.heatIdleSince) / 60_000;
+    const name = this.printerName(s.printerId);
+    const paused = s.state === 'paused';
+    const autoOff = !paused && config.idleHeaterOffMin > 0;
+    const heaters = `bed ${s.bedTarget}°C, nozzle ${s.extruderTarget}°C`;
+    const ev = (type: EventType, severity: Severity, title: string, message: string, actionTaken?: string) =>
+      this.emit({ printerId: s.printerId, printerName: name, type, severity, title, message,
+                  filename: s.filename ?? null, actionTaken: actionTaken ?? null });
+
+    if (!t.heatAlerted && mins >= config.idleHeaterAlertMin) {
+      t.heatAlerted = true;
+      const lead = t.vendorBusySince
+        ? `The printer has been stuck preparing a print for ${Math.round((now - t.vendorBusySince) / 60_000)} min with heaters on (${heaters}).`
+        : `Heaters have been on for ${Math.round(mins)} min with nothing printing (${heaters}).`;
+      const why = s.fault ? ` The printer is showing error ${s.fault.code}: ${s.fault.description}.`
+                : paused ? ' The print is paused.' : '';
+      ev('heaters_idle', 'warning', `🔥 ${name}: heaters on, not printing`, `${lead}${why}` +
+         (autoOff ? ` They will be turned off automatically in ${Math.max(1, Math.round(config.idleHeaterOffMin - mins))} min.` : ''));
+    }
+
+    if (autoOff && !t.heatOffAt && mins >= config.idleHeaterOffMin) {
+      t.heatOffAt = now;
+      const client = this.fleet.client(s.printerId);
+      (client ? client.gcode('TURN_OFF_HEATERS') : Promise.reject(new Error('not connected')))
+        .then(() => ev('heaters_off', 'warning', `🧯 ${name}: heaters turned off`,
+          `Heaters were on for ${Math.round(mins)} min with nothing printing (${heaters}), so they were switched off.`,
+          'heaters turned off'))
+        .catch((e: any) => ev('heaters_off', 'critical', `🔥 ${name}: could not turn heaters off`,
+          `Tried to switch off idle heaters (${heaters}) but failed: ${e?.message || e}. Check the printer.`));
+    } else if (t.heatOffAt && !t.heatOffFailed && now - t.heatOffAt > 5 * 60_000) {
+      // We sent TURN_OFF_HEATERS 5+ min ago and they're still on: something re-enabled them.
+      t.heatOffFailed = true;
+      ev('heaters_off', 'critical', `🔥 ${name}: heaters still on`,
+         `Heaters are still on (${heaters}) 5 min after being switched off. Check the printer.`);
+    }
   }
 
   // ---- Dataset capture ----

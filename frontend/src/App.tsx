@@ -29,6 +29,7 @@ const stateLabel: Record<string, string> = {
 const evIcon: Record<string, string> = {
   print_finished: '✅', print_cancelled: '🛑', filament_runout: '🧵', klipper_error: '⚠️',
   printer_offline: '📴', printer_online: '🔌', stall_suspected: '⏳', print_started: '▶️', paused: '⏸️', info: 'ℹ️',
+  printer_fault: '⚠️', fault_cleared: '✔️', heaters_idle: '🔥', heaters_off: '🧯',
 };
 
 /* ---------- camera (snapshot polling via backend) ---------- */
@@ -92,6 +93,12 @@ function PrinterCard({ printer, onEdit }: { printer: Printer; onEdit: (p: Printe
         <div class="stat"><div class="k">⏱️ Elapsed</div><div class="v">{fmtDur(s?.printDuration)}</div></div>
         <div class="stat"><div class="k">🏁 ETA</div><div class="v">{fmtETA(s?.etaSeconds)}</div></div>
       </div>
+      {s?.fault && (
+        <div class="fault-banner" title={s.fault.message || undefined}>
+          ⚠️ <b>Error {s.fault.code}</b>: {s.fault.description}
+          {(s.bedTarget > 0 || s.extruderTarget > 0) && <div class="fault-heat">🔥 Heaters still on</div>}
+        </div>
+      )}
       {s?.filamentDetected === false && <div class="muted" style="margin-top:8px;color:var(--st-offline)">🧵 Filament runout detected</div>}
       <Camera printer={printer} />
       {s?.online && (st === 'printing' || st === 'paused') && (
