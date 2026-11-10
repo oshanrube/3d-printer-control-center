@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { config } from './config.js';
-import { eventsRepo, printsRepo } from './db.js';
+import { eventsRepo, printsRepo, kv } from './db.js';
 import { captureForDataset } from './camera.js';
 import { sendPush, type PushResult } from './push.js';
 import { describeKlipperError } from './errors.js';
@@ -190,12 +190,19 @@ export class Engine {
     // so wait briefly (the two feeds arrive in either order) and stay quiet if so.
     if (s.fault !== undefined) {
       const code = s.fault?.code ?? 0;
+      // First look since a restart: if this exact fault was already alerted before the
+      // restart, don't send it again.
+      if (t.lastFaultCode === undefined && code && Number(kv.get(`fault:${s.printerId}`) || 0) === code) {
+        t.lastFaultCode = code; t.faultAlerted = true;
+      }
+      if (!code) kv.set(`fault:${s.printerId}`, '0');
       if (code && code !== t.lastFaultCode) {
         t.faultAlerted = false;
         setTimeout(() => {
           const cur = this.fleet.getState(s.printerId);
           if (!cur?.fault || cur.fault.code !== code || cur.state === 'error') return;
           t.faultAlerted = true;
+          kv.set(`fault:${s.printerId}`, String(code));
           // Mid-print the heaters are supposed to be on, so only mention them once the
           // printer has stopped. A fault while the print carries on normally (e.g. the
           // K1C's AI camera flagging something, like error 509 on Luffy) is a warning.

@@ -8,6 +8,24 @@
 const KLIPPER_HINTS: Record<string, string> = {
   key586: 'A move went outside the build area. This usually means the file was sliced for a different printer model.',
 };
+const KLIPPER_TEXT: Record<string, string> = {
+  key586: 'Move out of range',
+};
+
+/**
+ * Creality's firmware mirrors Klipper errors as its own fault codes: 2000 + Klipper's
+ * key number (Klipper key586 "Move out of range" -> Creality 2586), with the error's
+ * values as the only message (e.g. "[159.578, 362.006, 3.990, 277498.667]").
+ * Returns readable text for such a code, or null if it isn't a mirrored Klipper code.
+ */
+export function describeMirroredKlipperFault(code: number, values: string): string | null {
+  if (code < 2000 || code >= 3000) return null;
+  const key = `key${code - 2000}`;
+  const nums = (values.match(/-?\d+(?:\.\d+)?/g) || []).map(Number);
+  const xyz = nums.length >= 3 ? `: X${nums[0].toFixed(1)} Y${nums[1].toFixed(1)} Z${nums[2].toFixed(1)}` : '';
+  const text = KLIPPER_TEXT[key] ? `${KLIPPER_TEXT[key]} (${key})${key === 'key586' ? xyz : ''}` : `Klipper error ${key}`;
+  return KLIPPER_HINTS[key] ? `${text}. ${KLIPPER_HINTS[key]}` : text;
+}
 
 export function describeKlipperError(raw: string | undefined | null): { code?: string; text: string; hint?: string } {
   const s = String(raw || '').trim();

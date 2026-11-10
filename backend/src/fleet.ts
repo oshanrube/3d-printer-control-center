@@ -136,17 +136,23 @@ export class Fleet extends EventEmitter {
     let eta: number | null = null;
     if (progress > 0 && totalDuration > 0) eta = Math.max(0, totalDuration * (1 - progress));
 
-    // Filament runout sensor (first one found): filament_detected true/false
+    // Filament runout sensor (first *enabled* one): filament_detected true/false.
+    // A disabled sensor always reads false (the K2's, which feeds from its rack/CFS),
+    // and treating that as a runout auto-paused K2 prints.
     let filamentDetected: boolean | null = null;
     for (const name of entry.client.sensorNames) {
       const s = c[name];
-      if (s && typeof s.filament_detected === 'boolean') { filamentDetected = s.filament_detected; break; }
+      if (s && s.enabled !== false && typeof s.filament_detected === 'boolean') { filamentDetected = s.filament_detected; break; }
     }
 
     const next: LiveState = {
       printerId: id,
       online,
-      state: mapState(ps.state, online),
+      // Until Klipper's first status arrives, the print state is unknown: keep the
+      // 'offline' placeholder (which the engine ignores) instead of falling back to
+      // 'standby'. The Creality feed can connect first after a restart, and a fake
+      // standby -> printing looked like a new print (false "started", split dataset rows).
+      state: ps.state === undefined ? 'offline' : mapState(ps.state, online),
       stateMessage: ps.message || undefined,
       filename: ps.filename ?? null,
       progress,

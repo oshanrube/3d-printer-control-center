@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events';
 import WebSocket from 'ws';
 import type { Printer } from './types.js';
+import { describeMirroredKlipperFault } from './errors.js';
 
 /**
  * Read-only client for Creality's own status feed (ws://<printer>:9999), served by
@@ -29,7 +30,7 @@ const KNOWN: Record<number, string> = {
 };
 
 export function describeFault(f: CrealityFault): string {
-  return KNOWN[f.code] || f.message || `Creality error ${f.code}`;
+  return KNOWN[f.code] || describeMirroredKlipperFault(f.code, f.message) || f.message || `Creality error ${f.code}`;
 }
 
 const SILENCE_MS = 120_000;  // no messages this long -> assume a dead socket, reconnect
