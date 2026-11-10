@@ -34,14 +34,14 @@ export const config = {
   // Compare each print with a successful run of the same file at the same step (ref-compare.ts).
   referenceCompare: (process.env.REFERENCE_COMPARE ?? '1') === '1',
 
-  // Stage 1 failure detection: Obico's open-source failure detector (ml_api) on bc250.
+  // Stage 1 failure detection: Obico's open-source failure detector (ml_api), on the Pi's NPU (detector/).
   // Hyperparameters are Obico's own (FD_1ST_GEN_PARAMS), tuned for one frame per 10 s.
   detector: {
-    url: (process.env.OBICO_URL || 'http://10.0.68.30:3333').replace(/\/+$/, ''),
+    url: (process.env.OBICO_URL || 'http://127.0.0.1:3333').replace(/\/+$/, ''),
     token: process.env.OBICO_TOKEN || '',
     enabled: process.env.OBICO_ENABLED === '1' || (process.env.OBICO_ENABLED !== '0' && !!process.env.OBICO_TOKEN),
     // Where the detector can fetch frames from this server (it downloads images by URL).
-    imageBase: (process.env.OBICO_IMAGE_BASE || 'http://10.0.68.53:8081').replace(/\/+$/, ''),
+    imageBase: (process.env.OBICO_IMAGE_BASE || 'http://127.0.0.1:8081').replace(/\/+$/, ''),
     intervalSec: 10,
     sensitivity: Number(process.env.OBICO_SENSITIVITY || '1'),  // Obico's "detective sensitivity"
     autoPause: process.env.AUTO_PAUSE_FAILURE === '1',            // pause at the failure threshold (off: alert only)

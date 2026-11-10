@@ -24,10 +24,10 @@ services:
       # - DATASET_SNAPSHOT_SEC=20
       - VAPID_SUBJECT=${VAPID_SUBJECT:-mailto:admin@local}
       # AI failure detection. Secrets live in ./.env (gitignored).
-      # Stage 1: Obico failure detector on bc250 (enabled when OBICO_TOKEN is set).
-      - OBICO_URL=${OBICO_URL:-http://10.0.68.30:3333}
+      # Stage 1: Obico failure detector on the Pi's NPU (the `detector` service; enabled when OBICO_TOKEN is set).
+      - OBICO_URL=${OBICO_URL:-http://127.0.0.1:3333}
       - OBICO_TOKEN=${OBICO_TOKEN:-}
-      - OBICO_IMAGE_BASE=${OBICO_IMAGE_BASE:-http://10.0.68.53:8081}
+      - OBICO_IMAGE_BASE=${OBICO_IMAGE_BASE:-http://127.0.0.1:8081}
       - OBICO_SENSITIVITY=${OBICO_SENSITIVITY:-1}
       - AUTO_PAUSE_FAILURE=${AUTO_PAUSE_FAILURE:-0}   # 1 = pause at the "failure" level
       # Stage 2 (optional): vision LLM second opinion (enabled when AI_API_KEY is set).
@@ -36,6 +36,30 @@ services:
     volumes:
       # On the Pi: DATA_PATH=/media/nvme/printer-control-center/data (in .env).
       - ${DATA_PATH:-./data}:/data
+
+  # Obico failure detector on the Orange Pi's RK3566 NPU (see detector/). Optional:
+  # start with `docker compose --profile npu up -d detector`, then point OBICO_URL at
+  # http://127.0.0.1:3333. The model is converted with detector/convert.py.
+  detector:
+    build: ./detector
+    image: obico-detector-npu:df8190e
+    container_name: obico-detector
+    profiles: [npu]
+    network_mode: host            # listens on 127.0.0.1:3333 only (see Dockerfile CMD)
+    restart: unless-stopped
+    mem_limit: 1g
+    devices:
+      # The RK3566 NPU (RKNPU driver, DRM node pair).
+      - /dev/dri/card1:/dev/dri/card1
+      - /dev/dri/renderD129:/dev/dri/renderD129
+    security_opt:
+      # The RKNN runtime identifies the chip from /proc/device-tree/compatible, which
+      # links into /sys/firmware: Docker masks that path by default. This unmasks it.
+      - systempaths=unconfined
+    environment:
+      - ML_API_TOKEN=${OBICO_TOKEN}
+    volumes:
+      - ${MODELS_PATH:-/media/nvme/printer-control-center/models}/obico-rk3566-fp16.rknn:/model_cache/ml_api/rknn/model-weights.rknn:ro
 
   # Cloudflare Tunnel -> real HTTPS + remote access (required for Web Push).
   # 1) Create a tunnel in Cloudflare Zero Trust (Networks -> Tunnels).
