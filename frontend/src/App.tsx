@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
+import { createPortal } from 'preact/compat';
 import { api, FAILURE_REASONS, type Printer, type PrinterEvent, type StoppedPrint } from './api';
 import { useStore } from './store';
 import { enablePush, pushStatus } from './push';
@@ -208,6 +209,71 @@ function PrinterModal({ printer, onClose }: { printer: Printer | 'new'; onClose:
   );
 }
 
+/* ---------- frame viewer (lightbox) ---------- */
+// Full-screen view of a print's saved frames, opening on the last one. Step back with
+// the arrows / ← → keys / swipe to see when it went wrong. Esc, × or tapping outside closes.
+function FrameViewer({ printId, title, onClose }: { printId: number; title: string; onClose: () => void }) {
+  const [frames, setFrames] = useState<{ name: string; t: number }[] | null>(null);
+  const [i, setI] = useState(0);
+  const touchX = useRef<number | null>(null);
+  useEffect(() => {
+    api.printFrames(printId).then(f => { setFrames(f); setI(Math.max(0, f.length - 1)); }).catch(() => setFrames([]));
+  }, [printId]);
+  const n = frames?.length ?? 0;
+  const go = (d: number) => setI(x => Math.min(Math.max(0, x + d), Math.max(0, n - 1)));
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+      else if (e.key === 'ArrowLeft') go(-1);
+      else if (e.key === 'ArrowRight') go(1);
+    };
+    window.addEventListener('keydown', onKey);
+    const prevOverflow = document.body.style.overflow; document.body.style.overflow = 'hidden';
+    return () => { window.removeEventListener('keydown', onKey); document.body.style.overflow = prevOverflow; };
+  }, [n]);
+  const f = frames?.[i];
+  const end = frames?.[n - 1]?.t;
+  const fmtTime = (t: number) => new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  const before = f && end ? Math.round((end - f.t) / 60000) : 0;
+  return createPortal(
+    <div class="lightbox" onClick={(e) => e.target === e.currentTarget && onClose()}
+      onTouchStart={(e: any) => { touchX.current = e.touches[0].clientX; }}
+      onTouchEnd={(e: any) => {
+        if (touchX.current === null) return;
+        const dx = e.changedTouches[0].clientX - touchX.current; touchX.current = null;
+        if (Math.abs(dx) > 40) go(dx > 0 ? -1 : 1);
+      }}>
+      <div class="lb-top">
+        <div class="lb-title">{title}</div>
+        <button class="lb-btn" onClick={onClose} title="Close (Esc)">×</button>
+      </div>
+      {frames === null && <div class="lb-msg">Loading…</div>}
+      {frames && n === 0 && (
+        <img class="lb-img" src={api.lastFrameUrl(printId)} alt="last frame" onClick={(e) => e.stopPropagation()} />
+      )}
+      {f && <img class="lb-img" src={api.printFrameUrl(printId, f.name)} alt={`frame ${i + 1}`} />}
+      {f && (
+        <div class="lb-bar">
+          <button class="lb-btn" disabled={i === 0} onClick={() => go(-1)} title="Earlier (←)">‹</button>
+          <div class="lb-cap">
+            {fmtTime(f.t)} · {i === n - 1 ? 'last frame' : `${before} min before the end`}
+            <div class="lb-sub">frame {i + 1} of {n} · every 20 s</div>
+          </div>
+          <button class="lb-btn" disabled={i === n - 1} onClick={() => go(1)} title="Later (→)">›</button>
+        </div>
+      )}
+      {frames && n > 1 && (
+        <input class="lb-scrub" type="range" min={0} max={n - 1} value={i}
+          onInput={(e: any) => setI(Number(e.currentTarget.value))} aria-label="Frame" />
+      )}
+      {/* Preload neighbours so stepping is instant. */}
+      {frames && [i - 1, i + 1].filter(k => k >= 0 && k < n).map(k =>
+        <link rel="preload" as="image" href={api.printFrameUrl(printId, frames[k].name)} />)}
+    </div>,
+    document.body,
+  );
+}
+
 /* ---------- failure labels (training data) ---------- */
 function ReasonChips({ print, onDone }: { print: StoppedPrint; onDone: () => void }) {
   const [busy, setBusy] = useState(false);
@@ -227,10 +293,13 @@ function ReasonChips({ print, onDone }: { print: StoppedPrint; onDone: () => voi
 }
 
 function LabelPrompt({ print, onDone, onLater }: { print: StoppedPrint; onDone: () => void; onLater: () => void }) {
+  const [view, setView] = useState(false);
   return (
     <div class="label-prompt">
+      {view && <FrameViewer printId={print.id} title={`${print.printerName} · ${print.filename || 'print'}`} onClose={() => setView(false)} />}
       <div class="label-head">
-        <img class="thumb" src={api.lastFrameUrl(print.id)} alt="" onError={(e: any) => { e.currentTarget.style.display = 'none'; }} />
+        <img class="thumb clickable" src={api.lastFrameUrl(print.id)} alt="" title="Tap to view (and step back through the frames)"
+          onClick={() => setView(true)} onError={(e: any) => { e.currentTarget.style.display = 'none'; }} />
         <div>
           <div class="label-q">Why did the last print stop?</div>
           <div class="muted">{print.outcome === 'error' ? 'Error' : 'Cancelled'} {timeAgo(print.endedAt)} · {print.filename || 'unknown file'}</div>
@@ -248,9 +317,11 @@ function LabelModal({ onClose, onChanged }: { onClose: () => void; onChanged: ()
   const load = async () => setRows(tab === 'stopped' ? await api.unlabelled() : await api.finished());
   useEffect(() => { setRows(null); load(); }, [tab]);
   const reasonLabel = (k?: string | null) => FAILURE_REASONS.find(r => r.key === k)?.label;
+  const [view, setView] = useState<StoppedPrint | null>(null);
   return (
     <div class="modal" onClick={(e) => e.target === e.currentTarget && onClose()}>
       <div class="modal-box">
+        {view && <FrameViewer printId={view.id} title={`${view.printerName} · ${view.filename || 'print'}`} onClose={() => setView(null)} />}
         <h2>Label failed prints</h2>
         <p class="muted" style="margin-bottom:12px">Saying why prints failed turns the recorded camera frames and sensor data into training data for better failure detection.</p>
         <div class="row" style="margin-bottom:12px">
@@ -263,7 +334,8 @@ function LabelModal({ onClose, onChanged }: { onClose: () => void; onChanged: ()
         {rows && rows.map(p => (
           <div class="label-row">
             <div class="label-head">
-              <img class="thumb" src={api.lastFrameUrl(p.id)} alt="" onError={(e: any) => { e.currentTarget.style.display = 'none'; }} />
+              <img class="thumb clickable" src={api.lastFrameUrl(p.id)} alt="" title="Tap to view (and step back through the frames)"
+                onClick={() => setView(p)} onError={(e: any) => { e.currentTarget.style.display = 'none'; }} />
               <div>
                 <div class="label-q">{p.printerName}: {p.outcome}{p.reason ? ` · ${reasonLabel(p.reason)}` : ''}</div>
                 <div class="muted">{timeAgo(p.endedAt)} · {p.filename || 'unknown file'}{p.note ? ` · “${p.note}”` : ''}</div>

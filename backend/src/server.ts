@@ -158,6 +158,26 @@ export function buildServer(fleet: Fleet, ai: { current?: AiAnalyzer } = {}, ref
     return reply.send(readFileSync(path));
   });
   app.get('/api/printers/:id/reference-debug', async (req) => ref.current?.explain(Number((req.params as any).id)) ?? { error: 'reference comparison off' });
+  // A print's saved camera frames (newest last), for stepping back through what went wrong.
+  const printFramesDir = (id: number) => {
+    const p = printsRepo.get(id);
+    return p?.snapshot_dir ? join(config.dataDir, p.snapshot_dir) : null;
+  };
+  const listFrames = (dir: string) => { try { return readdirSync(dir).filter(f => /^\d+\.jpg$/.test(f)).sort(); } catch { return []; } };
+  app.get('/api/prints/:id/frames', async (req, reply) => {
+    const dir = printFramesDir(Number((req.params as any).id));
+    if (!dir) return reply.code(404).send();
+    const limit = Math.min(360, Number((req.query as any)?.limit) || 90);   // default: last ~30 min
+    return listFrames(dir).slice(-limit).map(f => ({ name: f, t: Number(f.slice(0, -4)) }));
+  });
+  app.get('/api/prints/:id/frame/:name', async (req, reply) => {
+    const { id, name } = req.params as any;
+    if (!/^\d+\.jpg$/.test(String(name))) return reply.code(400).send();   // only this print's frame files
+    const dir = printFramesDir(Number(id));
+    if (!dir || !existsSync(join(dir, name))) return reply.code(404).send();
+    reply.header('Content-Type', 'image/jpeg').header('Cache-Control', 'max-age=86400');
+    return reply.send(readFileSync(join(dir, name)));
+  });
   // The print's last saved camera frame, to help remember what happened.
   app.get('/api/prints/:id/last-frame', async (req, reply) => {
     const p = printsRepo.get(Number((req.params as any).id));

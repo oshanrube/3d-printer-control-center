@@ -77,5 +77,7 @@ export const api = {
   label: (id: number, reason: string, note?: string) =>
     j(`/api/prints/${id}/label`, { method: 'POST', body: JSON.stringify({ reason, note }) }),
   lastFrameUrl: (id: number) => `/api/prints/${id}/last-frame`,
+  printFrames: (id: number, limit = 90) => j<{ name: string; t: number }[]>(`/api/prints/${id}/frames?limit=${limit}`),
+  printFrameUrl: (id: number, name: string) => `/api/prints/${id}/frame/${name}`,
   referenceFrameUrl: (printerId: number, at: number) => `/api/printers/${printerId}/reference-frame?t=${at}`,
 };
