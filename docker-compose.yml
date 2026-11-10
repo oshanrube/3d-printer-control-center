@@ -12,7 +12,7 @@ services:
     init: true
     restart: unless-stopped
     environment:
-      - TZ=UTC
+      - TZ=Asia/Colombo      # +05:30, same as the Pi
       - PORT=8081            # app binds :8081 directly on the host (no port mapping in host mode)
       # Refuse to start if this file is missing from /data (data drive not mounted).
       - DATA_MARKER=${DATA_MARKER:-}
@@ -36,6 +36,7 @@ services:
     volumes:
       # On the Pi: DATA_PATH=/media/nvme/printer-control-center/data (in .env).
       - ${DATA_PATH:-./data}:/data
+      - /etc/localtime:/etc/localtime:ro       # container clock/logs in the Pi's timezone
 
   # Obico failure detector on the Orange Pi's RK3566 NPU (see detector/). Optional:
   # start with `docker compose --profile npu up -d detector`, then point OBICO_URL at
@@ -58,8 +59,10 @@ services:
       - systempaths=unconfined
     environment:
       - ML_API_TOKEN=${OBICO_TOKEN}
+      - TZ=Asia/Colombo
     volumes:
       - ${MODELS_PATH:-/media/nvme/printer-control-center/models}/obico-rk3566-fp16.rknn:/model_cache/ml_api/rknn/model-weights.rknn:ro
+      - /etc/localtime:/etc/localtime:ro
 
   # Cloudflare Tunnel -> real HTTPS + remote access (required for Web Push).
   # 1) Create a tunnel in Cloudflare Zero Trust (Networks -> Tunnels).
