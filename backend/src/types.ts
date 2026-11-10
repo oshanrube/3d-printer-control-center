@@ -62,6 +62,8 @@ export interface LiveState {
   // From Creality's own firmware feed (:9999). undefined = feed unavailable.
   fault?: { code: number; message: string; description: string } | null;
   vendorBusy?: boolean;       // firmware is running a job Klipper can't see yet (pre-print heat/level)
+  vendorFile?: string | null; // file the firmware is printing/preparing (Creality feed)
+  preparing?: boolean;        // firmware preparing a new print (Klipper still shows the previous one) — display only
   errorText?: string;         // readable Klipper error (when state === 'error')
   ai?: AiVerdict | null;      // latest vision-model check of this printer's camera (during prints)
   reference?: RefVerdict | null; // latest comparison with a successful run of the same file

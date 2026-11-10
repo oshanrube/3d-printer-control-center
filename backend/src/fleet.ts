@@ -171,6 +171,9 @@ export class Fleet extends EventEmitter {
       ...environmentFrom(c),
       updatedAt: Date.now(),
     };
+    // Creality's pre-print phase (heating, levelling, bed check) runs before Klipper gets
+    // the job, so Klipper still shows the previous print's complete/cancelled + filename.
+    next.preparing = !!next.vendorBusy && next.online && !['printing', 'paused', 'offline'].includes(next.state);
     if (next.state === 'error' && next.stateMessage) {
       const k = describeKlipperError(next.stateMessage);
       next.errorText = k.hint ? `${k.text}. ${k.hint}` : k.text;
@@ -181,12 +184,13 @@ export class Fleet extends EventEmitter {
     this.emitState(id);
   }
 
-  private vendorFields(entry: Entry): Pick<LiveState, 'fault' | 'vendorBusy'> {
+  private vendorFields(entry: Entry): Pick<LiveState, 'fault' | 'vendorBusy' | 'vendorFile'> {
     const v = entry.vendor.status;
-    if (!v) return { fault: undefined, vendorBusy: false };
+    if (!v) return { fault: undefined, vendorBusy: false, vendorFile: null };
     return {
       fault: v.fault ? { code: v.fault.code, message: v.fault.message, description: describeFault(v.fault) } : null,
       vendorBusy: v.state === 1 && !v.fault,
+      vendorFile: v.state === 1 ? (v.file ?? null) : null,
     };
   }
 

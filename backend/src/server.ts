@@ -35,7 +35,7 @@ export function buildServer(fleet: Fleet, ai: { current?: AiAnalyzer } = {}, ref
   // once per second per printer. Changes that matter are sent immediately.
   const lastSent = new Map<number, { at: number; key: string }>();
   const pending = new Map<number, NodeJS.Timeout>();
-  const keyOf = (s: LiveState) => [s.online, s.state, s.fault?.code ?? '', s.errorText ?? '', s.filename ?? '', s.ai?.assessment ?? '', s.reference?.ok ?? ''].join('|');
+  const keyOf = (s: LiveState) => [s.online, s.state, s.fault?.code ?? '', s.errorText ?? '', s.filename ?? '', s.ai?.assessment ?? '', s.reference?.ok ?? '', s.preparing ? 1 : 0].join('|');
   const sendState = (s: LiveState) => {
     lastSent.set(s.printerId, { at: Date.now(), key: keyOf(s) });
     broadcast({ type: 'state', state: s });

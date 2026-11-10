@@ -42,7 +42,7 @@ function timeAgo(ms: number) {
 }
 const stateLabel: Record<string, string> = {
   offline: 'Offline', standby: 'Ready', printing: 'Printing', paused: 'Paused',
-  complete: 'Complete', cancelled: 'Cancelled', error: 'Error',
+  complete: 'Complete', cancelled: 'Cancelled', error: 'Error', preparing: 'Preparing',
 };
 const evIcon: Record<string, string> = {
   print_finished: '✅', print_cancelled: '🛑', filament_runout: '🧵', klipper_error: '⚠️',
@@ -100,7 +100,11 @@ function PrinterCard({ printer, onEdit, toLabel, onLabelled, onLater }: {
   toLabel?: StoppedPrint; onLabelled: () => void; onLater: (id: number) => void;
 }) {
   const s = printer.live;
-  const st = s?.state || 'offline';
+  // While the firmware warms up / calibrates for a new print, Klipper still reports the
+  // previous print's state and file: show "Preparing" and the new file instead.
+  const st = s?.preparing ? 'preparing' : (s?.state || 'offline');
+  const fileShown = s?.preparing ? (s.vendorFile || s.filename) : s?.filename;
+  const progressShown = s?.preparing ? 0 : (s?.progress || 0);
   const [showRef, setShowRef] = useState(false);
   const busy = useRef(false);
   const act = async (a: 'pause' | 'resume' | 'cancel') => {
@@ -121,10 +125,10 @@ function PrinterCard({ printer, onEdit, toLabel, onLabelled, onLater }: {
       </div>
       <div class="prog">
         <div class="prog-top">
-          <span class="prog-file">{s?.filename || '—'}</span>
-          <span class="prog-pct">{s ? Math.round((s.progress || 0) * 100) : 0}%</span>
+          <span class="prog-file">{fileShown || '—'}</span>
+          <span class="prog-pct">{s?.preparing ? 'warming up / calibrating' : `${s ? Math.round(progressShown * 100) : 0}%`}</span>
         </div>
-        <div class="bar"><div class="fill" style={{ width: `${s ? (s.progress || 0) * 100 : 0}%` }} /></div>
+        <div class="bar"><div class="fill" style={{ width: `${s ? progressShown * 100 : 0}%` }} /></div>
       </div>
       <div class="stats">
         <div class="stat"><div class="k">🛏️ Bed</div><div class="v">{s ? `${s.bedTemp}° / ${s.bedTarget}°` : '—'}</div></div>
@@ -149,7 +153,7 @@ function PrinterCard({ printer, onEdit, toLabel, onLabelled, onLater }: {
           {s.ai.reason && <div class="ai-reason">{s.ai.reason}</div>}
         </div>
       )}
-      {toLabel && st !== 'printing' && st !== 'paused' && (
+      {toLabel && st !== 'printing' && st !== 'paused' && st !== 'preparing' && (
         <LabelPrompt print={toLabel} onDone={onLabelled} onLater={() => onLater(toLabel.id)} />
       )}
       {s?.reference && (st === 'printing' || st === 'paused') && (
@@ -431,13 +435,13 @@ export function App() {
 
   const counts = { printing: 0, ready: 0, offline: 0, complete: 0 };
   for (const p of printers) {
-    const s = p.live?.state;
-    if (s === 'printing' || s === 'paused') counts.printing++;
+    const s = p.live?.preparing ? 'preparing' : p.live?.state;
+    if (s === 'printing' || s === 'paused' || s === 'preparing') counts.printing++;
     else if (s === 'complete') counts.complete++;
     else if (!p.live?.online) counts.offline++;
     else counts.ready++;
   }
-  const order = (p: Printer) => ({ printing: 0, paused: 1, complete: 2, standby: 3, error: 3, cancelled: 4, offline: 5 } as any)[p.live?.state || 'offline'] ?? 5;
+  const order = (p: Printer) => p.live?.preparing ? 0 : ({ printing: 0, paused: 1, complete: 2, standby: 3, error: 3, cancelled: 4, offline: 5 } as any)[p.live?.state || 'offline'] ?? 5;
   const sorted = [...printers].sort((a, b) => order(a) - order(b));
 
   return (

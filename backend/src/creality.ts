@@ -21,6 +21,7 @@ export interface VendorStatus {
   state?: number;        // Creality print state (1 = printing/preparing)
   deviceState?: number;
   model?: string;
+  file?: string;         // file the firmware is printing / preparing (basename)
   fault: CrealityFault | null;
 }
 
@@ -82,7 +83,7 @@ export class CrealityClient extends EventEmitter {
       try { msg = JSON.parse(data.toString()); } catch { return; }
       if (!msg || typeof msg !== 'object') return;
       Object.assign(this.cache, msg);
-      if ('err' in msg || 'state' in msg || 'deviceState' in msg || 'model' in msg || !this.status) this.publish();
+      if ('err' in msg || 'state' in msg || 'deviceState' in msg || 'model' in msg || 'printFileName' in msg || !this.status) this.publish();
     });
     ws.on('error', () => { /* close handler retries */ });
     ws.on('close', () => {
@@ -101,6 +102,7 @@ export class CrealityClient extends EventEmitter {
       state: typeof c.state === 'number' ? c.state : undefined,
       deviceState: typeof c.deviceState === 'number' ? c.deviceState : undefined,
       model: c.model,
+      file: typeof c.printFileName === 'string' && c.printFileName ? c.printFileName.split('/').pop() : undefined,
       fault: code ? { code, errcode: Number(e?.errcode) || 0, message: String(e?.value || '').trim() } : null,
     };
     const changed = JSON.stringify(next) !== JSON.stringify(this.status);

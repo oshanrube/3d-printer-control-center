@@ -178,3 +178,8 @@ main{margin-top:16px}
 .lb-btn:disabled { opacity: .3; cursor: default; }
 .lb-msg { color: #9aa3b2; }
 .lb-scrub { width: min(640px, 100%); }
+
+/* Creality pre-print phase (warming up / calibrating) */
+.badge.preparing{color:var(--st-paused);background:color-mix(in srgb,var(--st-paused) 16%,transparent)}
+.badge.preparing .dot{animation:pulse 1.6s ease-in-out infinite}
+.card.preparing::before{background:var(--st-paused)}
