@@ -196,10 +196,15 @@ export class Engine {
           const cur = this.fleet.getState(s.printerId);
           if (!cur?.fault || cur.fault.code !== code || cur.state === 'error') return;
           t.faultAlerted = true;
-          const heat = cur.bedTarget > 0 || cur.extruderTarget > 0
+          // Mid-print the heaters are supposed to be on, so only mention them once the
+          // printer has stopped. A fault while the print carries on normally (e.g. the
+          // K1C's AI camera flagging something, like error 509 on Luffy) is a warning.
+          const stillPrinting = cur.state === 'printing';   // Klipper is still printing
+          const heat = !stillPrinting && cur.state !== 'paused' && (cur.bedTarget > 0 || cur.extruderTarget > 0)
             ? ` Heaters are still on (bed ${cur.bedTarget}°C, nozzle ${cur.extruderTarget}°C).` : '';
-          this.emit({ printerId: s.printerId, printerName: name, type: 'printer_fault', severity: 'critical',
-                      title: `⚠️ ${name}: error ${code}`, message: `${cur.fault.description}.${heat}`,
+          const context = stillPrinting ? ' The print is still running normally. Check the camera.' : '';
+          this.emit({ printerId: s.printerId, printerName: name, type: 'printer_fault', severity: stillPrinting ? 'warning' : 'critical',
+                      title: `⚠️ ${name}: error ${code}`, message: `${cur.fault.description}.${heat}${context}`,
                       filename: cur.filename ?? null, actionTaken: null });
         }, FAULT_SETTLE_MS);
       } else if (!code && t.lastFaultCode && t.faultAlerted) {

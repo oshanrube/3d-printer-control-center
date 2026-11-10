@@ -134,6 +134,7 @@ Compares a print with a **successful run of the same file at the same step**. Kl
 
 ## Creality firmware facts
 - `ws://<printer>:9999`: first message is a full snapshot, then deltas. Fields: `err {errcode,key,value}`, `state` (1 printing/preparing, 5 halted on error, 7 stopping, 4 stopped), `deviceState`, `model`, `printProgress`, targets. `creality.ts` never sends anything.
+- **Error 509** (`errcode 500, key 509`, no description) appeared on Luffy on 2026-11-10 17 min into a healthy print (2.8%, first layers) and stayed active while it printed normally. Probably one of the K1C's AI camera checks (the 5xx range; the firmware config has spaghetti, first-layer and foreign-object checks), possibly a loose filament strand lying on Luffy's bed. Unconfirmed: Luffy's logs aren't reachable (IoT SSID, no SSH password). Fault alerts now say "heaters still on" only once the printer has stopped, and a fault while Klipper keeps printing is a *warning* ("still running normally, check the camera"), not critical.
 - **Error 521** = `ai detect camera dirty objects`: the pre-print AI camera check saw something on the bed. The screen shows it as "unknown exception".
 - Printer logs: Creality services in `/usr/data/creality/userdata/log/` (`master-server.log` covers print control and fault codes; `app-server.log` covers cloud state and `err`). Klipper and Moonraker logs are in `/usr/data/printer_data/logs/`. Timestamps are local time.
 
