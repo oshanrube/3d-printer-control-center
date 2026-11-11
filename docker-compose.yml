@@ -29,7 +29,9 @@ services:
       - OBICO_TOKEN=${OBICO_TOKEN:-}
       - OBICO_IMAGE_BASE=${OBICO_IMAGE_BASE:-http://127.0.0.1:8081}
       - OBICO_SENSITIVITY=${OBICO_SENSITIVITY:-1}
-      - AUTO_PAUSE_FAILURE=${AUTO_PAUSE_FAILURE:-0}   # 1 = pause at the "failure" level
+      - AUTO_PAUSE_RISK=${AUTO_PAUSE_RISK:-0.5}   # pause when the detector's risk is above this (0 = never)
+      - AUTO_PAUSE_JAM=${AUTO_PAUSE_JAM:-1}       # pause on a suspected jam / printing in air
+      - PAUSE_REMIND_MIN=${PAUSE_REMIND_MIN:-5}   # remind every N min while an auto-paused print stays paused
       # Stage 2 (optional): vision LLM second opinion (enabled when AI_API_KEY is set).
       - AI_API_KEY=${AI_API_KEY:-}
       - AI_BASE_URL=${AI_BASE_URL:-http://10.0.68.30:8888}

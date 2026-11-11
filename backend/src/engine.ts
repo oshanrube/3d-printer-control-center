@@ -44,10 +44,21 @@ const PUSH_FOR: Partial<Record<EventType, boolean>> = {
   print_finished: true, print_cancelled: true, filament_runout: true,
   klipper_error: true, printer_offline: true, stall_suspected: true,
   printer_fault: true, heaters_idle: true, heaters_off: true, ai_failure: true, jam_suspected: true, reference_mismatch: true,
+  auto_paused: true, pause_reminder: true,
 };
+
+/** A print this engine paused because of a suspected failure; reminded about until it's dealt with. */
+interface PauseWatch {
+  kind: 'ai' | 'jam'; reason: string; filename: string | null;
+  at: number;          // when the pause was requested
+  lastRemind: number;  // last push about it
+  seenPaused: boolean; // the printer actually reached "paused"
+  retried: boolean;    // pause re-sent once because it hadn't taken effect
+}
 
 export class Engine {
   private tracks = new Map<number, Track>();
+  private pauseWatch = new Map<number, PauseWatch>();
 
   constructor(
     private fleet: Fleet,
@@ -57,7 +68,11 @@ export class Engine {
   start() {
     this.fleet.on('state', (s: LiveState) => this.onState(s));
     // Heater watchdog also runs on a timer, in case a printer goes quiet.
-    setInterval(() => { for (const s of this.fleet.getStates()) { this.checkHeaters(s); this.checkIdlePeripherals(s); } }, 30_000);
+    setInterval(() => { for (const s of this.fleet.getStates()) { this.checkHeaters(s); this.checkIdlePeripherals(s); this.checkPauseWatch(s); } }, 30_000);
+    // Auto-pauses survive a restart, so the reminders keep coming.
+    for (const p of this.fleet.getStates()) {
+      try { const w = JSON.parse(kv.get(`autopause:${p.printerId}`) || 'null'); if (w?.kind) this.pauseWatch.set(p.printerId, w); } catch { /* none */ }
+    }
     setInterval(() => this.sampleMotion(), 5_000);
     const closed = printsRepo.closeFragments();
     if (closed) console.log(`[engine] closed ${closed} split print fragment(s) as 'continued'`);
@@ -90,6 +105,69 @@ export class Engine {
       const summary = r.total === 0 ? 'no devices subscribed'
         : `sent to ${r.sent}/${r.total}` + (r.failures.length ? `; failed: ${r.failures.map(f => `${f.service} ${f.status ?? ''} ${f.error}`.trim()).join(', ')}` : '');
       if (saved.id) eventsRepo.setPushResult(saved.id, summary);
+    }
+  }
+
+  /**
+   * Pause a print because a detector suspects it's failing, then remind every
+   * PAUSE_REMIND_MIN minutes while it stays paused (until it's cancelled or resumed).
+   * `announced`: the detector's own alert already said it's pausing (no second push).
+   */
+  autoPause(printerId: number, kind: PauseWatch['kind'], reason: string, detail: string, announced: boolean) {
+    const s = this.fleet.getStates().find(x => x.printerId === printerId);
+    if (!s || s.state !== 'printing' || this.pauseWatch.has(printerId)) return;
+    const name = this.printerName(printerId);
+    const now = Date.now();
+    const w: PauseWatch = { kind, reason, filename: s.filename ?? null, at: now, lastRemind: now, seenPaused: false, retried: false };
+    this.savePauseWatch(printerId, w);
+    console.log(`[engine] auto-pausing ${name}: ${reason}`);
+    this.fleet.client(printerId)?.pause().catch(e => console.warn(`[engine] auto-pause of ${name} failed: ${e?.message || e}`));
+    this.emit({
+      printerId, printerName: name, type: announced ? 'paused' : 'auto_paused', severity: 'critical',
+      title: `⏸️ ${name} paused: ${reason}`,
+      message: `${detail} I'll remind you every ${config.pauseRemindMin} min until you cancel or resume it.`,
+      filename: s.filename ?? null, actionTaken: 'auto-paused',
+    });
+  }
+
+  private savePauseWatch(id: number, w: PauseWatch | null) {
+    if (w) this.pauseWatch.set(id, w); else this.pauseWatch.delete(id);
+    try { kv.set(`autopause:${id}`, w ? JSON.stringify(w) : ''); } catch { /* best effort */ }
+  }
+
+  private checkPauseWatch(s: LiveState) {
+    const w = this.pauseWatch.get(s.printerId);
+    if (!w || !s.online || s.state === 'offline') return;
+    const now = Date.now();
+    const name = this.printerName(s.printerId);
+    const remindMs = Math.max(1, config.pauseRemindMin) * 60_000;
+    const mins = Math.round((now - w.at) / 60_000);
+    if (s.state === 'paused') {
+      if (!w.seenPaused) { w.seenPaused = true; this.savePauseWatch(s.printerId, w); }
+      if (now - w.lastRemind < remindMs) return;
+      w.lastRemind = now; this.savePauseWatch(s.printerId, w);
+      this.emit({
+        printerId: s.printerId, printerName: name, type: 'pause_reminder', severity: 'critical',
+        title: `⏸️ ${name} is still paused (${mins} min)`,
+        message: `Paused because of: ${w.reason}. Check the camera, then cancel or resume the print. Heaters stay on while it's paused.`,
+        filename: w.filename, actionTaken: null,
+      });
+    } else if (s.state === 'printing' && !w.seenPaused) {
+      // The pause hasn't taken effect (yet). Re-send it once, and keep telling the owner.
+      if (now - w.lastRemind < remindMs) return;
+      w.lastRemind = now;
+      if (!w.retried) { w.retried = true; this.fleet.client(s.printerId)?.pause().catch(() => {}); }
+      this.savePauseWatch(s.printerId, w);
+      this.emit({
+        printerId: s.printerId, printerName: name, type: 'pause_reminder', severity: 'critical',
+        title: `⚠️ ${name} hasn't paused yet (${mins} min)`,
+        message: `I asked it to pause because of: ${w.reason}, but it's still printing. Check it now.`,
+        filename: w.filename, actionTaken: null,
+      });
+    } else {
+      // Resumed (printing again after the pause), cancelled, finished or errored: done.
+      console.log(`[engine] ${name} auto-pause resolved (now ${s.state})`);
+      this.savePauseWatch(s.printerId, null);
     }
   }
 
@@ -151,14 +229,19 @@ export class Engine {
     // ---- Klipper errors: once per distinct error, not on every reconnect ----
     if (s.online && s.state === 'error') {
       const msg = s.stateMessage || '';
+      // Already alerted before a backend restart? Don't send it again.
+      if (t.lastKlipperError === undefined && kv.get(`klippererr:${s.printerId}`) === msg) t.lastKlipperError = msg;
       if (msg !== t.lastKlipperError) {
         t.lastKlipperError = msg;
+        kv.set(`klippererr:${s.printerId}`, msg);
+        // errorText = readable message + hint + the console error that preceded it (fleet.ts).
         const { text, hint } = describeKlipperError(msg);
-        mk('klipper_error', 'critical', `⚠️ ${name} error`, `${text || `${name} reported a printer error.`}${hint ? ` ${hint}` : ''}`,
-           config.autoPauseOnError ? 'halted' : undefined);
+        const body = s.errorText || `${text || `${name} reported a printer error.`}${hint ? ` ${hint}` : ''}`;
+        mk('klipper_error', 'critical', `⚠️ ${name} error`, body, config.autoPauseOnError ? 'halted' : undefined);
       }
-    } else if (s.online && s.state !== 'error') {
+    } else if (s.online && s.state !== 'error' && s.state !== 'offline') {
       t.lastKlipperError = undefined;
+      kv.set(`klippererr:${s.printerId}`, '');
     }
 
     // ---- Filament runout (while printing) ----

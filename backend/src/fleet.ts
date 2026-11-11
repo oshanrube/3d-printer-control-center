@@ -65,6 +65,7 @@ interface Entry {
   reference?: RefVerdict | null; // latest reference-run comparison (set by ref-compare)
   cache: any;           // merged Moonraker status objects
   state: LiveState;
+  recentErrors: { t: number; text: string }[]; // Klipper "!!" console errors (newest last)
 }
 
 /** Manages every printer connection and exposes normalized live state. */
@@ -93,7 +94,7 @@ export class Fleet extends EventEmitter {
   private spawn(p: Printer) {
     const client = new MoonrakerClient(p);
     const vendor = new CrealityClient(p);
-    const entry: Entry = { client, vendor, cache: {}, state: this.blankState(p) };
+    const entry: Entry = { client, vendor, cache: {}, state: this.blankState(p), recentErrors: [] };
     this.entries.set(p.id, entry);
 
     vendor.on('update', () => this.recompute(p.id));
@@ -108,6 +109,10 @@ export class Fleet extends EventEmitter {
       entry.state.state = 'offline';
       entry.cache = {};
       this.emitState(p.id);
+    });
+    client.on('gcode_error', (text: string) => {
+      entry.recentErrors.push({ t: Date.now(), text });
+      if (entry.recentErrors.length > 20) entry.recentErrors.shift();
     });
     client.on('status', (status: any) => {
       deepMerge(entry.cache, status);
@@ -174,9 +179,24 @@ export class Fleet extends EventEmitter {
     // Creality's pre-print phase (heating, levelling, bed check) runs before Klipper gets
     // the job, so Klipper still shows the previous print's complete/cancelled + filename.
     next.preparing = !!next.vendorBusy && next.online && !['printing', 'paused', 'offline'].includes(next.state);
+    // Klipper shut down (or failed to start): only webhooks says so; print_stats keeps
+    // showing standby. Treat it as an error with Klipper's own message.
+    const wh = c.webhooks || {};
+    if (online && (wh.state === 'shutdown' || wh.state === 'error')) {
+      next.state = 'error';
+      next.stateMessage = wh.state_message || `Klipper ${wh.state}`;
+    }
     if (next.state === 'error' && next.stateMessage) {
       const k = describeKlipperError(next.stateMessage);
       next.errorText = k.hint ? `${k.text}. ${k.hint}` : k.text;
+      // A shutdown message like key60 "Internal error on G28" is a consequence: add the
+      // most recent different error from the console just before it (e.g. key789, the
+      // K2's Z motors failing to follow).
+      const cause = [...entry.recentErrors].reverse()
+        .filter(e => Date.now() - e.t < 15 * 60_000)
+        .map(e => describeKlipperError(e.text))
+        .find(d => d.code && d.code !== k.code && d.text);
+      if (cause) next.errorText += ` Before that: ${cause.text}${cause.hint ? `. ${cause.hint}` : ''}`;
       // The firmware mirrors Klipper errors as its own fault code; describe it with Klipper's message.
       if (next.fault) next.fault = { ...next.fault, description: next.errorText };
     }

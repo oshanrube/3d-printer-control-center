@@ -38,9 +38,9 @@ async function main() {
   const engine = new Engine(fleet, broadcastEvent);
   engine.start();
   fleet.start();
-  aiRef.current = new AiAnalyzer(fleet, e => engine.report(e));
+  aiRef.current = new AiAnalyzer(fleet, e => engine.report(e), (id, kind, reason, detail, announced) => engine.autoPause(id, kind, reason, detail, announced));
   aiRef.current.start();
-  const jam = new JamDetector(fleet, e => engine.report(e));
+  const jam = new JamDetector(fleet, e => engine.report(e), (id, kind, reason, detail, announced) => engine.autoPause(id, kind, reason, detail, announced));
   if (config.jamDetection) jam.start();
   refRef.current = new RefComparer(fleet, e => engine.report(e));
   if (config.referenceCompare) refRef.current.start();

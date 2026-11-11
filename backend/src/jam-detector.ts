@@ -15,6 +15,7 @@
  *         least SELF_DROP below the median level 15-60 min ago, for HOLD minutes.
  * Both skip the first MIN_RUN minutes of a print. One warning per print.
  */
+import { config } from './config.js';
 import { printsRepo } from './db.js';
 import type { Fleet } from './fleet.js';
 import type { LiveState, PrinterEvent } from './types.js';
@@ -78,6 +79,7 @@ export class JamDetector {
   constructor(
     private fleet: Fleet,
     private report: (e: Omit<PrinterEvent, 'createdAt'>) => unknown,
+    private pause: (printerId: number, kind: 'ai' | 'jam', reason: string, detail: string, announced: boolean) => void = () => {},
   ) {}
 
   start() { this.timer = setInterval(() => { try { this.tick(); } catch (e: any) { console.warn('[jam]', e?.message || e); } }, 60_000); }
@@ -127,11 +129,13 @@ export class JamDetector {
     const detail = why.kind === 'peer'
       ? `Its hotend heater is working ${Math.round((1 - why.ratio) * 100)}% less than ${why.peers.join(' and ')} on the same file, which usually means little or no plastic is flowing.`
       : `Its hotend heater power dropped ${Math.round(why.drop * 100)}% and stayed down, at the same temperature and fan speed, which usually means filament stopped flowing.`;
+    const pause = config.autoPauseJam && s.state === 'printing';
     this.report({
-      printerId: s.printerId, printerName: name, type: 'jam_suspected', severity: 'warning',
+      printerId: s.printerId, printerName: name, type: 'jam_suspected', severity: pause ? 'critical' : 'warning',
       title: `🧵 ${name}: possible jam / printing in air`,
-      message: `${detail} Check the camera.`,
-      filename: s.filename ?? null, actionTaken: null,
+      message: `${detail}${pause ? ' Pausing the print.' : ' Check the camera.'}`,
+      filename: s.filename ?? null, actionTaken: pause ? 'auto-paused' : null,
     });
+    if (pause) this.pause(s.printerId, 'jam', 'jam / printing in air suspected', detail, true);
   }
 }

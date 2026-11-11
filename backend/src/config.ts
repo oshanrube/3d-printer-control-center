@@ -20,6 +20,12 @@ export const config = {
   // Auto-pause toggles (engine actions)
   autoPauseOnRunout: (process.env.AUTO_PAUSE_RUNOUT ?? '1') === '1',
   autoPauseOnError: (process.env.AUTO_PAUSE_ERROR ?? '1') === '1',
+  // Pause when the failure detector's risk (0-1, as shown on the card) goes above this (0 = never).
+  autoPauseRisk: Number(process.env.AUTO_PAUSE_RISK ?? '0.5'),
+  // Pause when a jam / printing in air is suspected (jam-detector.ts).
+  autoPauseJam: (process.env.AUTO_PAUSE_JAM ?? '1') === '1',
+  // After an auto-pause, push a reminder this often while the print stays paused.
+  pauseRemindMin: parseInt(process.env.PAUSE_REMIND_MIN || '5', 10),
   // Idle-heater watchdog: heaters on while nothing is printing.
   idleHeaterAlertMin: parseInt(process.env.IDLE_HEATER_ALERT_MIN || '15', 10),
   // Turn heaters off after this long (0 = alert only). Never applied to a paused print.
@@ -44,7 +50,6 @@ export const config = {
     imageBase: (process.env.OBICO_IMAGE_BASE || 'http://127.0.0.1:8081').replace(/\/+$/, ''),
     intervalSec: 10,
     sensitivity: Number(process.env.OBICO_SENSITIVITY || '1'),  // Obico's "detective sensitivity"
-    autoPause: process.env.AUTO_PAUSE_FAILURE === '1',            // pause at the failure threshold (off: alert only)
   },
 
   // Stage 2 (optional second opinion): a vision LLM (llama.cpp server, OpenAI-compatible API).

@@ -113,7 +113,12 @@ export class MoonrakerClient extends EventEmitter {
     if (msg.method === 'notify_status_update' && Array.isArray(msg.params)) {
       this.emit('status', msg.params[0]);
     } else if (msg.method === 'notify_klippy_shutdown') {
-      this.emit('status', { print_stats: { state: 'error', message: 'Klipper shutdown' } });
+      // The real reason arrives as webhooks.state_message (subscribed); mark it now.
+      this.emit('status', { webhooks: { state: 'shutdown' } });
+    } else if (msg.method === 'notify_gcode_response' && Array.isArray(msg.params)) {
+      // Klipper's console: lines starting "!!" are errors (e.g. the key789 motor error
+      // that precedes a shutdown). Passed on so alerts can say what really happened.
+      for (const line of msg.params) if (typeof line === 'string' && line.startsWith('!!')) this.emit('gcode_error', line.slice(2).trim());
     } else if (msg.method === 'notify_klippy_ready') {
       this.rquery().catch(() => {});
     }
@@ -144,7 +149,7 @@ export class MoonrakerClient extends EventEmitter {
     } catch { /* sensors optional */ }
 
     const objects: Record<string, null> = {
-      print_stats: null, heater_bed: null, extruder: null,
+      webhooks: null, print_stats: null, heater_bed: null, extruder: null,
       display_status: null, virtual_sdcard: null, idle_timeout: null,
     };
     for (const s of this.subscribedSensors) objects[s] = null;
@@ -159,7 +164,7 @@ export class MoonrakerClient extends EventEmitter {
   /** Re-query a full snapshot (used after reconnect / klippy ready). */
   async rquery() {
     const objects: Record<string, null> = {
-      print_stats: null, heater_bed: null, extruder: null,
+      webhooks: null, print_stats: null, heater_bed: null, extruder: null,
       display_status: null, virtual_sdcard: null,
     };
     for (const s of this.subscribedSensors) objects[s] = null;

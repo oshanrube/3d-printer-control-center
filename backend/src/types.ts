@@ -94,6 +94,8 @@ export type EventType =
   | 'jam_suspected'
   | 'reference_mismatch'
   | 'idle_off'
+  | 'auto_paused'
+  | 'pause_reminder'
   | 'paused'
   | 'resumed'
   | 'info';

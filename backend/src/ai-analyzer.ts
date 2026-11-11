@@ -98,6 +98,7 @@ interface Track {
   printKey?: string;
   pred: Prediction;
   level: 'none' | 'warning' | 'failure';   // highest alarm already raised this print
+  paused: boolean;                          // already auto-paused this print (never twice, so a resume sticks)
   lastRowAt: number;
 }
 
@@ -116,6 +117,7 @@ export class AiAnalyzer {
   constructor(
     private fleet: Fleet,
     private report: (e: Omit<PrinterEvent, 'createdAt'>) => unknown,
+    private pause: (printerId: number, kind: 'ai' | 'jam', reason: string, detail: string, announced: boolean) => void = () => {},
   ) {}
 
   start() {
@@ -153,7 +155,7 @@ export class AiAnalyzer {
   }
 
   private save(id: number, t: Track) {
-    try { kv.set(`fd:${id}`, JSON.stringify({ ...t.pred, printKey: t.printKey, level: t.level })); } catch { /* best effort */ }
+    try { kv.set(`fd:${id}`, JSON.stringify({ ...t.pred, printKey: t.printKey, level: t.level, paused: t.paused })); } catch { /* best effort */ }
   }
 
   private track(id: number): Track {
@@ -163,14 +165,15 @@ export class AiAnalyzer {
       // alerted), so a backend restart mid-print doesn't restart Obico's 30-frame
       // learning window or re-send an alert.
       const pred = newPrediction();
-      let printKey: string | undefined; let level: Track['level'] = 'none';
+      let printKey: string | undefined; let level: Track['level'] = 'none'; let paused = false;
       try {
         const saved = JSON.parse(kv.get(`fd:${id}`) || '{}');
         for (const k of Object.keys(pred) as (keyof Prediction)[]) if (typeof saved[k] === 'number') pred[k] = saved[k];
         if (typeof saved.printKey === 'string') printKey = saved.printKey;
         if (saved.level === 'warning' || saved.level === 'failure') level = saved.level;
+        paused = saved.paused === true;
       } catch { /* fresh */ }
-      t = { inFlight: false, lastRun: 0, pred, printKey, level, lastRowAt: 0 };
+      t = { inFlight: false, lastRun: 0, pred, printKey, level, paused, lastRowAt: 0 };
       this.tracks.set(id, t);
     }
     return t;
@@ -200,7 +203,7 @@ export class AiAnalyzer {
     const printKey = open ? `print:${open.id}` : `file:${s.filename || ''}`;
     if (t.printKey !== printKey) {
       Object.assign(t.pred, { currentFrameNum: 0, currentP: 0, ewmMean: 0, rollingMeanShort: 0 });
-      t.printKey = printKey; t.level = 'none';
+      t.printKey = printKey; t.level = 'none'; t.paused = false;
       this.fleet.setAi(s.printerId, null);
     }
 
@@ -253,8 +256,16 @@ export class AiAnalyzer {
     // Decisions, exactly as Obico: pause level first, else alert level. Each once per print.
     const failure = isFailing(t.pred, sens, FD.ESCALATING_FACTOR);
     const warning = !failure && isFailing(t.pred, sens, 1);
-    if (failure && t.level !== 'failure') { t.level = 'failure'; this.save(s.printerId, t); await this.alarm(s, 'failure', shot.body, risk); }
-    else if (warning && t.level === 'none') { t.level = 'warning'; this.save(s.printerId, t); await this.alarm(s, 'warning', shot.body, risk); }
+    // Auto-pause once the risk passes AUTO_PAUSE_RISK (after Obico's learning window), once per print.
+    const pauseAt = config.autoPauseRisk;
+    const pauseNow = pauseAt > 0 && !t.paused && risk > pauseAt && s.state === 'printing'
+      && t.pred.currentFrameNum >= FD.INIT_SAFE_FRAME_NUM;
+    if (pauseNow) { t.paused = true; this.save(s.printerId, t); }
+    let announced = false;
+    if (failure && t.level !== 'failure') { t.level = 'failure'; this.save(s.printerId, t); announced = true; await this.alarm(s, 'failure', shot.body, risk, pauseNow); }
+    else if (warning && t.level === 'none') { t.level = 'warning'; this.save(s.printerId, t); announced = true; await this.alarm(s, 'warning', shot.body, risk, pauseNow); }
+    if (pauseNow) this.pause(s.printerId, 'ai', 'spaghetti / failure suspected',
+      `The failure detector's risk reached ${Math.round(risk * 100)}% (it pauses above ${Math.round(pauseAt * 100)}%).`, announced);
   }
 
   private callDetector(imgUrl: string): Promise<Detection[]> {
@@ -273,9 +284,8 @@ export class AiAnalyzer {
     return p;
   }
 
-  private async alarm(s: LiveState, level: 'warning' | 'failure', jpeg: Buffer, risk: number) {
+  private async alarm(s: LiveState, level: 'warning' | 'failure', jpeg: Buffer, risk: number, pause: boolean) {
     const name = this.fleet.client(s.printerId)?.printer.name || `Printer ${s.printerId}`;
-    const pause = level === 'failure' && config.detector.autoPause;
 
     // Optional second opinion from a vision LLM.
     let opinion = '';
@@ -292,7 +302,6 @@ export class AiAnalyzer {
         + `${pause ? ' Pausing the print.' : ' Check the camera.'}${opinion}`,
       filename: s.filename ?? null, actionTaken: pause ? 'auto-paused' : null,
     });
-    if (pause) this.fleet.client(s.printerId)?.pause().catch(e => this.fail(this.status.detector, 'detector', `auto-pause failed: ${e?.message || e}`));
   }
 
   private async askVlm(s: LiveState, jpeg: Buffer): Promise<AiVerdict> {
