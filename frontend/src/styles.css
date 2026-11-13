@@ -183,3 +183,14 @@ main{margin-top:16px}
 .badge.preparing{color:var(--st-paused);background:color-mix(in srgb,var(--st-paused) 16%,transparent)}
 .badge.preparing .dot{animation:pulse 1.6s ease-in-out infinite}
 .card.preparing::before{background:var(--st-paused)}
+
+/* "Printing fine" override */
+.fine-line { margin-top: 8px; display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-size: 12px; }
+
+/* Live camera, full screen with zoom */
+.cam { cursor: zoom-in; }
+.cam-viewer { padding: 56px 0 12px; touch-action: none; background: #000; }
+.cv-stage { flex: 1; width: 100%; min-height: 0; overflow: hidden; display: flex; align-items: center; justify-content: center;
+            touch-action: none; cursor: grab; }
+.cv-img { max-width: 100%; max-height: 100%; object-fit: contain; user-select: none; -webkit-user-drag: none;
+          transform-origin: center center; will-change: transform; }

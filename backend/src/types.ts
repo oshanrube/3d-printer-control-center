@@ -67,6 +67,8 @@ export interface LiveState {
   errorText?: string;         // readable Klipper error (when state === 'error')
   ai?: AiVerdict | null;      // latest vision-model check of this printer's camera (during prints)
   reference?: RefVerdict | null; // latest comparison with a successful run of the same file
+  markedOk?: boolean;            // owner said this print is fine (print-ok.ts)
+  autoPaused?: string | null;    // why the engine auto-paused this print, while it's paused
   // Light and switchable fans, 0-1 (only those the printer has). Automatic fans excluded.
   peripherals?: { light?: number; fan0?: number; fan1?: number; fan2?: number };
   // Chamber, for display. target/heaterPower only on printers with a chamber heater (K2).

@@ -14,6 +14,7 @@
  * Results go to ai_checks (frames with detections are kept next to the print's dataset
  * frames) so detector scores + the print's final outcome become labelled data.
  */
+import { isPrintOk } from './print-ok.js';
 import { randomBytes } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -258,12 +259,13 @@ export class AiAnalyzer {
     const warning = !failure && isFailing(t.pred, sens, 1);
     // Auto-pause once the risk passes AUTO_PAUSE_RISK (after Obico's learning window), once per print.
     const pauseAt = config.autoPauseRisk;
-    const pauseNow = pauseAt > 0 && !t.paused && risk > pauseAt && s.state === 'printing'
+    const markedOk = isPrintOk(s.printerId, s.filename);   // owner said "printing fine": no pause, no warning
+    const pauseNow = pauseAt > 0 && !t.paused && !markedOk && risk > pauseAt && s.state === 'printing'
       && t.pred.currentFrameNum >= FD.INIT_SAFE_FRAME_NUM;
     if (pauseNow) { t.paused = true; this.save(s.printerId, t); }
     let announced = false;
     if (failure && t.level !== 'failure') { t.level = 'failure'; this.save(s.printerId, t); announced = true; await this.alarm(s, 'failure', shot.body, risk, pauseNow); }
-    else if (warning && t.level === 'none') { t.level = 'warning'; this.save(s.printerId, t); announced = true; await this.alarm(s, 'warning', shot.body, risk, pauseNow); }
+    else if (warning && t.level === 'none' && !markedOk) { t.level = 'warning'; this.save(s.printerId, t); announced = true; await this.alarm(s, 'warning', shot.body, risk, pauseNow); }
     if (pauseNow) this.pause(s.printerId, 'ai', 'spaghetti / failure suspected',
       `The failure detector's risk reached ${Math.round(risk * 100)}% (it pauses above ${Math.round(pauseAt * 100)}%).`, announced);
   }

@@ -6,6 +6,7 @@ export interface LiveState {
   fault?: { code: number; message: string; description: string } | null; vendorBusy?: boolean;
   vendorFile?: string | null; preparing?: boolean;
   errorText?: string;
+  markedOk?: boolean; autoPaused?: string | null;
   peripherals?: { light?: number; fan0?: number; fan1?: number; fan2?: number };
   chamber?: { temp: number; target?: number; heaterPower?: number } | null;
   fans?: { part?: number; chamber?: number; chamberAuto?: boolean; side?: number; hotend?: number; heater?: number };
@@ -68,6 +69,13 @@ export const api = {
   // Throws with the server's explanation (no devices / push service rejected it).
   testPush: async () => {
     const res = await fetch('/api/push/test', { method: 'POST' });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body?.error || `server returned ${res.status}`);
+    return body;
+  },
+  // "👍 Printing fine": the detectors stop flagging this print (and an auto-pause is resumed).
+  looksFine: async (id: number): Promise<{ ok: boolean; resumed?: boolean }> => {
+    const res = await fetch(`/api/printers/${id}/looks-fine`, { method: 'POST' });
     const body = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(body?.error || `server returned ${res.status}`);
     return body;

@@ -93,8 +93,10 @@ Stack: Fastify 4, @fastify/websocket 8, better-sqlite3 11, web-push, ws, puppete
 - The AI detector (risk > 50%) and the jam detector call `engine.autoPause()`: it pauses, pushes (`auto_paused`, or a non-pushed `paused` row when the detector's own alert already said "Pausing"), and keeps a watch in `kv autopause:<id>` (survives restarts).
 - While the print stays paused: a critical `pause_reminder` push every `PAUSE_REMIND_MIN` (5) min. If it never reaches "paused", the pause is re-sent once and the reminder says it hasn't paused yet. The watch ends when the print is resumed (printing again after the pause), cancelled, finished or errors.
 - Filament runout and Klipper errors still use their own pause path (no reminders).
+- **"👍 Printing fine" (since 2026-11-13):** shown on the card while a detector is worried (reference "Differs", AI not "Looks OK", or auto-paused). `POST /api/printers/:id/looks-fine` -> `engine.confirmOk`: stores `kv printok:<id>` = the current print's key (`print-ok.ts`, dataset row id or file), turns off reference comparison and jam checks for the rest of that print, stops AI auto-pause and AI warnings (the failure-level alert still fires), and resumes the print if the engine auto-paused it. Why: a print in **black filament** differed from a white reference run (difference 1.04) and its heater power differed from its peers, so a healthy print was flagged and paused.
 
 ## Cameras
+- **Tap a camera** on the dashboard for a full-screen live view (`CameraViewer`): pinch, scroll wheel, +/− buttons or double-tap to zoom (up to 6×), drag to pan.
 - **WebRTC printers** (K2 is WebRTC-only; the three K1Cs run WebRTC too) use libpeer: `POST http://<ip>:8000/call/webrtc_local` with base64 JSON `{type:'offer',sdp}` and get back base64 `{type:'answer',sdp}`.
   - libpeer's answer includes a **payload type that isn't in the offer** (sometimes a garbage negative number). Browsers reject it, so the answer must be **munged to keep only PTs present in both offer and answer**.
   - WebRTC media is UDP/SRTP: it can't be HTTP-proxied.

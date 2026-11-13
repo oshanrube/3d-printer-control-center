@@ -20,6 +20,7 @@
  * and still-running prints are never references. Same printer preferred, then same
  * model. Until a file has a successful run, nothing is compared. Warning only.
  */
+import { isPrintOk } from './print-ok.js';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import jpeg from 'jpeg-js';
@@ -200,6 +201,7 @@ export class RefComparer {
     const open = printsRepo.open(s.printerId);
     if (!open) return;
     if (t.printId !== open.id) Object.assign(t, { printId: open.id, over: 0, warned: false, refFrame: undefined });
+    if (isPrintOk(s.printerId, s.filename)) { if (s.reference) this.fleet.setReference(s.printerId, null); return; }
 
     const runs = runsOf(s.filename!);
     const mine = runs.find(r => r.printIds.includes(open.id));

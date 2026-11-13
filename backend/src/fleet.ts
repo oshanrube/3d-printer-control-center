@@ -63,6 +63,7 @@ interface Entry {
   vendor: CrealityClient; // Creality firmware feed (:9999): faults + pre-print phase
   ai?: AiVerdict | null;  // latest vision-model verdict (set by ai-analyzer)
   reference?: RefVerdict | null; // latest reference-run comparison (set by ref-compare)
+  flags?: { markedOk?: boolean; autoPaused?: string | null }; // set by the engine
   cache: any;           // merged Moonraker status objects
   state: LiveState;
   recentErrors: { t: number; text: string }[]; // Klipper "!!" console errors (newest last)
@@ -172,6 +173,7 @@ export class Fleet extends EventEmitter {
       ...this.vendorFields(entry),
       ai: entry.ai ?? null,
       reference: entry.reference ?? null,
+      ...(entry.flags || {}),
       peripherals: peripheralsFrom(c),
       ...environmentFrom(c),
       updatedAt: Date.now(),
@@ -259,6 +261,14 @@ export class Fleet extends EventEmitter {
   }
 
   /** Attach the latest AI verdict to a printer's live state (pushed to dashboards). */
+  setFlags(id: number, flags: { markedOk?: boolean; autoPaused?: string | null }) {
+    const e = this.entries.get(id);
+    if (!e) return;
+    e.flags = { ...(e.flags || {}), ...flags };
+    e.state = { ...e.state, ...flags, updatedAt: Date.now() };
+    this.emitState(id);
+  }
+
   setAi(id: number, verdict: AiVerdict | null) {
     const e = this.entries.get(id);
     if (!e) return;

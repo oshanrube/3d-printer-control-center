@@ -34,8 +34,10 @@ async function main() {
   const fleet = new Fleet();
   const aiRef: { current?: AiAnalyzer } = {};
   const refRef: { current?: RefComparer } = {};
-  const { app, broadcastEvent } = buildServer(fleet, aiRef, refRef);
+  const engineRef: { current?: Engine } = {};
+  const { app, broadcastEvent } = buildServer(fleet, aiRef, refRef, engineRef);
   const engine = new Engine(fleet, broadcastEvent);
+  engineRef.current = engine;
   engine.start();
   fleet.start();
   aiRef.current = new AiAnalyzer(fleet, e => engine.report(e), (id, kind, reason, detail, announced) => engine.autoPause(id, kind, reason, detail, announced));

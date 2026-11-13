@@ -57,6 +57,7 @@ const CAMERA_REFRESH_MS = 1000;
 
 function Camera({ printer }: { printer: Printer }) {
   const [src, setSrc] = useState<string>('');
+  const [zoom, setZoom] = useState(false);
   const [failed, setFailed] = useState(false);
   const live = printer.live;
   const active = !!live?.online;
@@ -83,7 +84,8 @@ function Camera({ printer }: { printer: Printer }) {
 
   if (!active || printer.cameraType === 'none') return null;
   return (
-    <div class="cam">
+    <div class="cam" onClick={() => setZoom(true)} title="Open full screen">
+      {zoom && <CameraViewer printer={printer} onClose={() => setZoom(false)} />}
       {!failed && src && (
         <img src={src} alt="camera"
           onLoad={() => { setFailed(false); next(CAMERA_REFRESH_MS); }}
@@ -111,6 +113,16 @@ function PrinterCard({ printer, onEdit, toLabel, onLabelled, onLater }: {
     if (busy.current) return; busy.current = true;
     try { if (a === 'cancel' && !confirm('Cancel this print?')) return; await api.action(printer.id, a); }
     catch (e: any) { alert(`Couldn't ${a} ${printer.name}: ${e?.message || e}`); }
+    finally { busy.current = false; }
+  };
+  const active = st === 'printing' || st === 'paused';
+  // A detector is worried about this print: offer "it's fine" (e.g. a different filament colour).
+  const concern = !!s && active && !s.markedOk
+    && (!!s.autoPaused || (!!s.reference && !s.reference.ok) || (!!s.ai && s.ai.assessment !== 'success'));
+  const looksFine = async () => {
+    if (busy.current) return; busy.current = true;
+    try { await api.looksFine(printer.id); }
+    catch (e: any) { alert(`Couldn't update ${printer.name}: ${e?.message || e}`); }
     finally { busy.current = false; }
   };
   return (
@@ -163,6 +175,18 @@ function PrinterCard({ printer, onEdit, toLabel, onLabelled, onLater }: {
           <button class="chip" style="margin-left:6px" onClick={() => setShowRef(!showRef)}>{showRef ? 'Hide' : 'Compare'}</button>
         </div>
       )}
+      {s?.autoPaused && st === 'paused' && (
+        <div class="fault-banner">⏸️ <b>Auto-paused</b>: {s.autoPaused}. Check the camera, then resume or cancel.</div>
+      )}
+      {concern && (
+        <div class="fine-line">
+          <button class="btn btn-sm" onClick={looksFine}>
+            👍 {s!.autoPaused && st === 'paused' ? 'Printing fine, resume' : 'Printing fine'}
+          </button>
+          <span class="muted">Stops the checks flagging this print{s!.autoPaused && st === 'paused' ? ' and resumes it' : ''}.</span>
+        </div>
+      )}
+      {s?.markedOk && active && <div class="muted fine-line">👍 You marked this print as fine: reference and jam checks are off, and the AI won't pause it.</div>}
       <Camera printer={printer} />
       {showRef && s?.reference && (
         <div class="ref-view">
@@ -214,6 +238,94 @@ function PrinterModal({ printer, onClose }: { printer: Printer | 'new'; onClose:
 }
 
 /* ---------- frame viewer (lightbox) ---------- */
+/* ---------- live camera, full screen with zoom ---------- */
+function CameraViewer({ printer, onClose }: { printer: Printer; onClose: () => void }) {
+  const [src, setSrc] = useState(api.snapshotUrl(printer.id) + '?t=' + Date.now());
+  const [v, setV] = useState({ s: 1, x: 0, y: 0 });            // zoom and pan (screen px)
+  const [state, setState] = useState<'loading' | 'ok' | 'failed'>('loading');
+  const view = useRef(v); view.current = v;
+  const box = useRef<HTMLDivElement>(null);
+  const pts = useRef(new Map<number, { x: number; y: number }>());
+  const pinch = useRef<{ d: number; s: number } | null>(null);
+  const alive = useRef(true);
+  const timer = useRef<number | undefined>(undefined);
+  const nextFrame = (delay = CAMERA_REFRESH_MS) => {
+    window.clearTimeout(timer.current);
+    timer.current = window.setTimeout(() => { if (alive.current) setSrc(api.snapshotUrl(printer.id) + '?t=' + Date.now()); }, delay);
+  };
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    const prevOverflow = document.body.style.overflow; document.body.style.overflow = 'hidden';
+    return () => { alive.current = false; window.clearTimeout(timer.current); window.removeEventListener('keydown', onKey); document.body.style.overflow = prevOverflow; };
+  }, []);
+
+  // Zoom to scale `s`, keeping the screen point (px, py) (relative to the centre) still.
+  const zoomTo = (s: number, px = 0, py = 0) => {
+    const c = view.current;
+    s = Math.min(6, Math.max(1, s));
+    if (s === 1) { setV({ s: 1, x: 0, y: 0 }); return; }
+    const k = s / c.s;
+    setV({ s, x: px - (px - c.x) * k, y: py - (py - c.y) * k });
+  };
+  const rel = (e: { clientX: number; clientY: number }) => {
+    const r = box.current!.getBoundingClientRect();
+    return { x: e.clientX - (r.left + r.width / 2), y: e.clientY - (r.top + r.height / 2) };
+  };
+  const onDown = (e: PointerEvent) => {
+    (e.currentTarget as Element).setPointerCapture(e.pointerId);
+    pts.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pts.current.size === 2) {
+      const [a, b] = [...pts.current.values()];
+      pinch.current = { d: Math.hypot(a.x - b.x, a.y - b.y) || 1, s: view.current.s };
+    }
+  };
+  const onMove = (e: PointerEvent) => {
+    const prev = pts.current.get(e.pointerId);
+    if (!prev) return;
+    pts.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pts.current.size === 2 && pinch.current) {
+      const [a, b] = [...pts.current.values()];
+      const mid = rel({ clientX: (a.x + b.x) / 2, clientY: (a.y + b.y) / 2 });
+      zoomTo(pinch.current.s * Math.hypot(a.x - b.x, a.y - b.y) / pinch.current.d, mid.x, mid.y);
+    } else if (pts.current.size === 1 && view.current.s > 1) {
+      setV(c => ({ ...c, x: c.x + e.clientX - prev.x, y: c.y + e.clientY - prev.y }));
+    }
+  };
+  const onUp = (e: PointerEvent) => {
+    pts.current.delete(e.pointerId);
+    if (pts.current.size < 2) pinch.current = null;
+  };
+  const lastTap = useRef(0);
+  const onTap = (e: MouseEvent) => {          // double-tap / double-click: 1x <-> 2.5x at that point
+    const now = Date.now();
+    if (now - lastTap.current < 300) { const p = rel(e); zoomTo(view.current.s > 1 ? 1 : 2.5, p.x, p.y); lastTap.current = 0; }
+    else lastTap.current = now;
+  };
+
+  return createPortal(
+    <div class="lightbox cam-viewer">
+      <div class="lb-top">
+        <div class="lb-title">📷 {printer.name} · live</div>
+        <button class="lb-btn" onClick={() => zoomTo(view.current.s / 1.5)} title="Zoom out">−</button>
+        <button class="lb-btn" onClick={() => zoomTo(view.current.s * 1.5)} title="Zoom in">+</button>
+        <button class="lb-btn" onClick={onClose} title="Close (Esc)">×</button>
+      </div>
+      <div class="cv-stage" ref={box}
+        onPointerDown={onDown as any} onPointerMove={onMove as any} onPointerUp={onUp as any} onPointerCancel={onUp as any}
+        onClick={onTap as any}
+        onWheel={(e: any) => { e.preventDefault(); const p = rel(e); zoomTo(view.current.s * Math.exp(-e.deltaY * 0.002), p.x, p.y); }}>
+        {state !== 'ok' && <div class="lb-msg">{state === 'loading' ? 'Loading camera…' : 'Connecting camera…'}</div>}
+        <img class="cv-img" src={src} alt="" draggable={false}
+          style={{ transform: `translate(${v.x}px, ${v.y}px) scale(${v.s})`, display: state === 'ok' ? '' : 'none' }}
+          onLoad={() => { setState('ok'); nextFrame(); }} onError={() => { setState(x => (x === 'ok' ? x : 'failed')); nextFrame(3000); }} />
+      </div>
+      <div class="lb-sub">{v.s > 1 ? `${v.s.toFixed(1)}× · drag to move · double-tap to reset` : 'Pinch, scroll or double-tap to zoom'}</div>
+    </div>,
+    document.body,
+  );
+}
+
 // Full-screen view of a print's saved frames, opening on the last one. Step back with
 // the arrows / ← → keys / swipe to see when it went wrong. Esc, × or tapping outside closes.
 function FrameViewer({ printId, title, onClose }: { printId: number; title: string; onClose: () => void }) {

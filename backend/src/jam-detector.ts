@@ -16,6 +16,7 @@
  * Both skip the first MIN_RUN minutes of a print. One warning per print.
  */
 import { config } from './config.js';
+import { isPrintOk } from './print-ok.js';
 import { printsRepo } from './db.js';
 import type { Fleet } from './fleet.js';
 import type { LiveState, PrinterEvent } from './types.js';
@@ -98,7 +99,7 @@ export class JamDetector {
       const t = this.tracks.get(me.s.printerId) ?? { alerted: false };
       if (t.printId !== me.printId) { Object.assign(t, { printId: me.printId, peerSince: undefined, selfSince: undefined, alerted: false }); }
       this.tracks.set(me.s.printerId, t);
-      if (t.alerted) continue;
+      if (t.alerted || isPrintOk(me.s.printerId, me.s.filename)) continue;
 
       // Peer check
       let ratio: number | null = null; let peerNames: string[] = [];

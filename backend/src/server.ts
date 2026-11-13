@@ -1,3 +1,4 @@
+import type { Engine } from './engine.js';
 import Fastify from 'fastify';
 import fastifyStatic from '@fastify/static';
 import fastifyWebsocket from '@fastify/websocket';
@@ -22,7 +23,8 @@ const STATE_MIN_INTERVAL_MS = 1000;
 // Failure labels the user can give a stopped (or bad completed) print.
 export const FAILURE_REASONS = ['spaghetti', 'jam', 'layer_shift', 'warping', 'adhesion', 'wrong_file', 'not_failed', 'other'];
 
-export function buildServer(fleet: Fleet, ai: { current?: AiAnalyzer } = {}, ref: { current?: RefComparer } = {}) {
+export function buildServer(fleet: Fleet, ai: { current?: AiAnalyzer } = {}, ref: { current?: RefComparer } = {},
+  engine: { current?: Engine } = {}) {
   const app = Fastify({ logger: false });
   app.register(fastifyWebsocket);
 
@@ -128,6 +130,14 @@ export function buildServer(fleet: Fleet, ai: { current?: AiAnalyzer } = {}, ref
       return reply.code(409).send({ error: describeKlipperError(quick.error).text || quick.error });
     });
   }
+
+  // "👍 Printing fine": override the detectors for the rest of this print (resumes an auto-pause).
+  app.post('/api/printers/:id/looks-fine', async (req, reply) => {
+    const id = Number((req.params as any).id);
+    if (!engine.current) return reply.code(503).send({ error: 'Not ready yet.' });
+    const r = await engine.current.confirmOk(id);
+    return r.ok ? r : reply.code(409).send(r);
+  });
 
   app.get('/api/events', async (req) => {
     const limit = Math.min(500, Number((req.query as any)?.limit) || 100);

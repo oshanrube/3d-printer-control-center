@@ -5,6 +5,7 @@ import { eventsRepo, printsRepo, kv } from './db.js';
 import { captureForDataset } from './camera.js';
 import { sendPush, type PushResult } from './push.js';
 import { describeKlipperError } from './errors.js';
+import { isPrintOk, markPrintOk } from './print-ok.js';
 import type { Fleet } from './fleet.js';
 import type { LiveState, PrinterEvent, EventType, Severity } from './types.js';
 
@@ -130,13 +131,43 @@ export class Engine {
     });
   }
 
+  /**
+   * The owner says the current print is fine ("👍 Printing fine"): stop the comparison
+   * detectors and AI auto-pause for the rest of it, and resume it if we auto-paused it.
+   */
+  async confirmOk(printerId: number): Promise<{ ok: boolean; resumed?: boolean; error?: string }> {
+    const s = this.fleet.getStates().find(x => x.printerId === printerId);
+    if (!s || !['printing', 'paused'].includes(s.state)) return { ok: false, error: 'Nothing is printing.' };
+    const name = this.printerName(printerId);
+    markPrintOk(printerId, s.filename);
+    this.fleet.setFlags(printerId, { markedOk: true });
+    this.fleet.setReference(printerId, null);
+    const watched = this.pauseWatch.has(printerId);
+    if (watched) this.savePauseWatch(printerId, null);
+    // Creality's resume macro can take minutes to answer: don't wait; the live state shows the outcome.
+    const resumed = watched && s.state === 'paused';
+    if (resumed) this.fleet.client(printerId)?.resume().catch(e => console.warn(`[engine] resume of ${name} failed: ${e?.message || e}`));
+    this.emit({
+      printerId, printerName: name, type: 'info', severity: 'info',
+      title: `👍 ${name}: marked as printing fine`,
+      message: `Reference and jam checks are off for the rest of this print, and the AI detector won't pause it.${resumed ? ' Resuming the print.' : ''}`,
+      filename: s.filename ?? null, actionTaken: resumed ? 'resumed' : null,
+    });
+    return { ok: true, resumed };
+  }
+
   private savePauseWatch(id: number, w: PauseWatch | null) {
     if (w) this.pauseWatch.set(id, w); else this.pauseWatch.delete(id);
+    this.fleet.setFlags(id, { autoPaused: w ? w.reason : null });
     try { kv.set(`autopause:${id}`, w ? JSON.stringify(w) : ''); } catch { /* best effort */ }
   }
 
   private checkPauseWatch(s: LiveState) {
+    // Keep the card's flags current (the "printing fine" mark belongs to one print).
+    const ok = (s.state === 'printing' || s.state === 'paused') && isPrintOk(s.printerId, s.filename);
+    if (!!s.markedOk !== ok) this.fleet.setFlags(s.printerId, { markedOk: ok });
     const w = this.pauseWatch.get(s.printerId);
+    if ((s.autoPaused ?? null) !== (w?.reason ?? null)) this.fleet.setFlags(s.printerId, { autoPaused: w?.reason ?? null });
     if (!w || !s.online || s.state === 'offline') return;
     const now = Date.now();
     const name = this.printerName(s.printerId);
