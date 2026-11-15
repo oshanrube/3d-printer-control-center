@@ -27,6 +27,8 @@ export interface VendorStatus {
 
 // Codes verified from printer logs. Others fall back to the firmware's own text.
 const KNOWN: Record<number, string> = {
+  // master-server.log: "ai detect discover foreign objects" (pre-print foreign-object check, confidence >= 62.5%)
+  104: 'AI camera found a foreign object on the bed during the pre-print check. Remove it (or check the plate edge) and restart',
   521: 'AI camera detected objects on the bed before printing. Clear the build plate and restart',
 };
 
