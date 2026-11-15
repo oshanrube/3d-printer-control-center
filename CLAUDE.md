@@ -156,6 +156,9 @@ Compares a print with a **successful run of the same file at the same step**. Kl
 - **Dataset fragments:** until 2026-11-09, each backend restart mid-print opened a new `prints` row. On startup, `closeFragments()` closes open rows with a newer row, as `continued` if the next row is the same file and `unknown` otherwise. A restart now rejoins the open row.
 - **2026-11-09 14:14, Usopp:** a file sliced for the **K2 Plus** (350 mm bed, `M8200` CFS commands) was sent to the K1C. Its start gcode moved to Y345, and Klipper stopped with `key586` "Move out of range" before printing. The K1C-sliced copy of the same model printed fine.
 
+- **2026-11-15 19:37 → 2026-11-16 05:20: app ran without its data.** A Happier agent session (trying to fix the K2 camera) rebuilt the image as `control-center` and started it with a bare `docker run`: no data volume, no `.env`. For ~10 h the app used an empty database inside the container (every push: "no devices subscribed"), and had no Obico token (AI detection off). Restored with compose; what it recorded is saved in `/media/nvme/printer-control-center/stray-container-data-20261115/`. The data-marker check is now **on by default when `DATA_DIR=/data`**, so such a container refuses to start. **Only ever deploy with `docker compose`.**
+- **2026-11-16, Luffy runout not reported:** the dashboard read only the first filament sensor (Luffy has two: spool `filament_sensor` and toolhead `filament_sensor_2`), and only counted a runout while "printing" (Klipper's `pause_on_runout` pauses 0.25 s later, often in the same update). Now any enabled sensor counts, during printing or a paused active print.
+
 ## Open items
 - [ ] Enable push on the phone over the Tailscale HTTPS address and confirm the test notification arrives.
 - [ ] In the Tailscale admin console, **disable key expiry** for the `printers` machine, or it drops off the tailnet after ~180 days.
@@ -177,6 +180,7 @@ Compares a print with a **successful run of the same file at the same step**. Kl
 - The Pi's `/bin/sh` is **dash**: no bash-isms (`declare -A`, etc.) in host one-liners.
 - Neither the Pi nor the old agent container has `sshpass`. For printer SSH, use `SSH_ASKPASS` + `SSH_ASKPASS_REQUIRE=force` + `setsid`.
 - The old agent container had no `node`. Run Node scripts inside the app container: put the file in `data/`, then `docker exec 3d-printer-control-center node /data/<file>`.
+- **Never start the app with `docker run`**: always `docker compose build control-center && docker compose up -d control-center`. A bare `docker run` has no data volume or `.env` (see the 2026-11-15 incident).
 - Commit messages with apostrophes break `sh -c '...'` quoting: write the message to a file and use `git commit -F`.
 - Auto-mode safety checks blocked: writes or service changes on printers over SSH, disabling logging/metrics services on the Pi, and reading printer init scripts. Ask the user, or have them add a permission rule; don't work around it.
 - The printers are in production. Never interrupt an active print; check `print_stats.state` first.

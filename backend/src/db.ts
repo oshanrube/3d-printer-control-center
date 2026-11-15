@@ -8,8 +8,13 @@ import type { Printer, PrinterEvent } from './types.js';
 // ever fails to mount, the bind mount would point at an empty folder and we'd silently
 // start a fresh database (losing push subscriptions, history, the dataset). Refuse to
 // start instead when the marker file is missing.
-if (process.env.DATA_MARKER && !existsSync(join(config.dataDir, process.env.DATA_MARKER))) {
-  console.error(`[db] FATAL: ${join(config.dataDir, process.env.DATA_MARKER)} not found. Is the data drive mounted? Refusing to start.`);
+// In the container (DATA_DIR=/data) the check is on by default, so a hand-made
+// `docker run` without the data volume can't start on an empty database either
+// (2026-11-15: one ran for 10 h, with no push devices and no AI detection).
+// DATA_MARKER= (empty) turns it off.
+const DATA_MARKER = process.env.DATA_MARKER ?? (config.dataDir === '/data' ? '.printer-data' : '');
+if (DATA_MARKER && !existsSync(join(config.dataDir, DATA_MARKER))) {
+  console.error(`[db] FATAL: ${join(config.dataDir, DATA_MARKER)} not found. Is the data drive mounted (use docker compose, not docker run)? Refusing to start.`);
   process.exit(1);
 }
 mkdirSync(config.dataDir, { recursive: true });

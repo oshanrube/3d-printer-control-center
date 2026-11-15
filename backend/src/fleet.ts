@@ -145,10 +145,14 @@ export class Fleet extends EventEmitter {
     // Filament runout sensor (first *enabled* one): filament_detected true/false.
     // A disabled sensor always reads false (the K2's, which feeds from its rack/CFS),
     // and treating that as a runout auto-paused K2 prints.
+    // Every enabled sensor counts: Luffy/K1-family printers have two (spool and toolhead,
+    // `filament_sensor_2`), and only reading the first one missed a real runout.
     let filamentDetected: boolean | null = null;
     for (const name of entry.client.sensorNames) {
       const s = c[name];
-      if (s && s.enabled !== false && typeof s.filament_detected === 'boolean') { filamentDetected = s.filament_detected; break; }
+      if (!s || s.enabled === false || typeof s.filament_detected !== 'boolean') continue;
+      if (!s.filament_detected) { filamentDetected = false; break; }
+      filamentDetected = true;
     }
 
     const next: LiveState = {

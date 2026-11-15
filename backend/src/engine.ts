@@ -276,12 +276,17 @@ export class Engine {
     }
 
     // ---- Filament runout (while printing) ----
+    // Klipper's own `pause_on_runout` pauses 0.25 s after the sensor trips, so the update
+    // that brings the runout often already says "paused": count a runout during an active
+    // print (printing or paused), not only while "printing".
     const fil = s.filamentDetected;
-    if (s.state === 'printing' && fil === false && t.lastFilament !== false) {
-      const action = config.autoPauseOnRunout ? 'auto-paused' : undefined;
+    const activePrint = s.state === 'printing' || (s.state === 'paused' && (t.inPrint || prev?.state === 'printing'));
+    if (activePrint && fil === false && t.lastFilament !== false) {
+      const alreadyPaused = s.state === 'paused';
+      const action = alreadyPaused ? 'paused by the printer' : config.autoPauseOnRunout ? 'auto-paused' : undefined;
       mk('filament_runout', 'critical', `🧵 ${name} out of filament`,
-         `Filament runout detected on ${name}${action ? ' — auto-pausing.' : '.'}`, action);
-      if (config.autoPauseOnRunout) this.fleet.client(s.printerId)?.pause().catch(() => {});
+         `Filament runout detected on ${name}${alreadyPaused ? ': the printer paused the print. Load filament, then resume.' : action ? ' — auto-pausing.' : '.'}`, action);
+      if (!alreadyPaused && config.autoPauseOnRunout) this.fleet.client(s.printerId)?.pause().catch(() => {});
     }
     t.lastFilament = fil;
 
