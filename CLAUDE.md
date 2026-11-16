@@ -176,6 +176,13 @@ Compares a print with a **successful run of the same file at the same step**. Kl
 - **Restart race (fixed 2026-11-10):** the Creality feed can connect before Klipper's first status. Live state then fell back to "standby", and the real "printing" a moment later looked like a new print (false `print_started`, split dataset rows). Until `print_stats` arrives, the state now stays the `offline` placeholder, which the engine ignores. Seven split rows were relinked as `continued`.
 - Headless Chromium in the app container has no emoji font, so emoji show as boxes in screenshots. That's cosmetic.
 
+## Delegating work to Qwen (`tools/qwen-task.sh`, since 2026-11-16)
+The owner wants Opus to **plan and review, and Qwen (bc250) to do the legwork**, to save Opus tokens. On the Pi host:
+`sh tools/qwen-task.sh start <name> <read|edit> <prompt-file>`, then `status <name>` / `log <name> [n]` (compact: tool calls, refusals, final "## Result") / `stop <name>`.
+- Runs headless Claude Code on Qwen as a transient systemd unit (`qwen-<name>`), cwd = repo, logs in `data/qwen-tasks/<name>.jsonl`.
+- Profiles: `read` (files, logs, `curl -s` GET, git log/diff, docker ps/logs) and `edit` (+ Edit/Write). Always denied: docker run/rm/stop/compose/build/exec, systemctl, git commit/push/reset/checkout, rm/mv, curl with -X/-d, kill/reboot. **Opus reviews the diff, then builds, deploys and commits itself.**
+- Qwen: 64k context, one request at a time (shared with Happier), ~45-50 tok/s; each task spends ~1-1.5 min loading Claude Code's prompt. Write prompts as explicit steps with exact paths/URLs; it gives up rather than retries when a command is refused. Good for: gathering logs/data, searching code, mechanical edits. Keep subtle debugging and design for Opus.
+
 ## Gotchas for agents
 - The Pi's `/bin/sh` is **dash**: no bash-isms (`declare -A`, etc.) in host one-liners.
 - Neither the Pi nor the old agent container has `sshpass`. For printer SSH, use `SSH_ASKPASS` + `SSH_ASKPASS_REQUIRE=force` + `setsid`.
