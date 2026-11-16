@@ -33,6 +33,7 @@ export class MoonrakerClient extends EventEmitter {
   private reconnectTimer?: NodeJS.Timeout;
   private stopped = false;
   private subscribedSensors: string[] = [];
+  private selfPausingSensors = new Set<string>();  // sensors with pause_on_runout: Klipper pauses by itself
   peripheralObjects: string[] = [];
   readonly host: string;
   readonly port: number;
@@ -147,6 +148,19 @@ export class MoonrakerClient extends EventEmitter {
       // (heater_fan / temperature_fan) are deliberately not included.
       this.peripheralObjects = [...PERIPHERAL_OBJECTS, ...ENV_OBJECTS].filter(o => objs.includes(o));
     } catch { /* sensors optional */ }
+    // Which sensors make Klipper pause on its own (pause_on_runout): for those we must not
+    // send a second pause. Creality's PAUSE macro doesn't stop at "already paused", so a
+    // second pause re-runs it and saves the cooled 140°C as the resume temperature
+    // (Sanji, 2026-11-16: resumed at 140°C, "Extrude below minimum temp", print ended).
+    this.selfPausingSensors = new Set();
+    try {
+      const cfg = await this.rpc('printer.objects.query', { objects: { configfile: ['settings'] } });
+      const settings = cfg?.status?.configfile?.settings || {};
+      for (const s of this.subscribedSensors) {
+        const v = settings[s]?.pause_on_runout;
+        if (v === true || v === 'true' || v === 'True') this.selfPausingSensors.add(s);
+      }
+    } catch { /* assume none pause by themselves */ }
 
     const objects: Record<string, null> = {
       webhooks: null, print_stats: null, heater_bed: null, extruder: null,
@@ -174,11 +188,23 @@ export class MoonrakerClient extends EventEmitter {
   }
 
   get sensorNames() { return this.subscribedSensors; }
+  /** True if any filament sensor pauses the print by itself on runout. */
+  get pausesOnRunout() { return this.selfPausingSensors.size > 0; }
 
   // ---- Control actions ----
   // Moonraker only replies once the macro finishes, and Creality's PAUSE/CANCEL
   // macros park the head and wait for cooling, which can take minutes.
-  pause()  { return this.rpc('printer.print.pause', {}, ACTION_TIMEOUT_MS); }
+  /**
+   * Pause, but only if the printer is really printing right now: a pause sent to an
+   * already-paused Creality printer re-runs its PAUSE macro and corrupts the saved
+   * resume temperature. Resolves { skipped } instead of sending in that case.
+   */
+  async pause() {
+    const q = await this.rpc('printer.objects.query', { objects: { print_stats: ['state'] } }).catch(() => null);
+    const state = q?.status?.print_stats?.state;
+    if (state && state !== 'printing') return { skipped: `printer is ${state}` };
+    return this.rpc('printer.print.pause', {}, ACTION_TIMEOUT_MS);
+  }
   resume() { return this.rpc('printer.print.resume', {}, ACTION_TIMEOUT_MS); }
   cancel() { return this.rpc('printer.print.cancel', {}, ACTION_TIMEOUT_MS); }
   emergencyStop() { return this.rpc('printer.emergency_stop', {}); }

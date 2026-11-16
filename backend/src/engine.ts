@@ -282,7 +282,8 @@ export class Engine {
     const fil = s.filamentDetected;
     const activePrint = s.state === 'printing' || (s.state === 'paused' && (t.inPrint || prev?.state === 'printing'));
     if (activePrint && fil === false && t.lastFilament !== false) {
-      const alreadyPaused = s.state === 'paused';
+      // The printer pauses by itself (pause_on_runout): never send a second pause.
+      const alreadyPaused = s.state === 'paused' || !!this.fleet.client(s.printerId)?.pausesOnRunout;
       const action = alreadyPaused ? 'paused by the printer' : config.autoPauseOnRunout ? 'auto-paused' : undefined;
       mk('filament_runout', 'critical', `🧵 ${name} out of filament`,
          `Filament runout detected on ${name}${alreadyPaused ? ': the printer paused the print. Load filament, then resume.' : action ? ' — auto-pausing.' : '.'}`, action);
