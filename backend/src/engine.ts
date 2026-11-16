@@ -330,7 +330,7 @@ export class Engine {
             ? ` Heaters are still on (bed ${cur.bedTarget}°C, nozzle ${cur.extruderTarget}°C).` : '';
           const context = stillPrinting ? ' The print is still running normally. Check the camera.' : '';
           this.emit({ printerId: s.printerId, printerName: name, type: 'printer_fault', severity: stillPrinting ? 'warning' : 'critical',
-                      title: `⚠️ ${name}: error ${code}`, message: `${cur.fault.description}.${heat}${context}`,
+                      title: code === 2839 ? `🧵 ${name} out of filament (CFS)` : `⚠️ ${name}: error ${code}`, message: `${cur.fault.description}.${heat}${context}`,
                       filename: cur.filename ?? null, actionTaken: null });
         }, FAULT_SETTLE_MS);
       } else if (!code && t.lastFaultCode && t.faultAlerted) {

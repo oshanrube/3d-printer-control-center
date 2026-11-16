@@ -9,6 +9,7 @@ const KLIPPER_HINTS: Record<string, string> = {
   key586: 'A move went outside the build area. This usually means the file was sliced for a different printer model.',
   key789: 'A closed-loop motor could not follow its commanded position: the axis may be blocked, binding or overloaded.',
   key60: 'Klipper crashed while running a command, usually as a consequence of an earlier error.',
+  key839: 'No other slot holds the same filament to switch to, so the printer paused. Load filament in that slot (or a matching spool), then resume.',
 };
 // English text for codes seen on this fleet (Creality's own messages are sometimes Chinese).
 const KLIPPER_TEXT: Record<string, string> = {
@@ -17,6 +18,7 @@ const KLIPPER_TEXT: Record<string, string> = {
   key60: 'Internal error',
   key96: 'Must home before probe',
   key840: 'Filament box (CFS) switch state error',
+  key839: 'Out of filament: none reached the extruder from the filament box', // "no filament detected at box extrude position"
 };
 
 /**
@@ -25,12 +27,20 @@ const KLIPPER_TEXT: Record<string, string> = {
  * values as the only message (e.g. "[159.578, 362.006, 3.990, 277498.667]").
  * Returns readable text for such a code, or null if it isn't a mirrored Klipper code.
  */
+/** CFS errors carry [box, slot], e.g. [1, "A"] -> "box 1, slot A". */
+function cfsSlot(values: string): string {
+  const m = String(values || '').match(/(\d+)\s*,\s*"?([A-Da-d])"?/);
+  return m ? ` (CFS box ${m[1]}, slot ${m[2].toUpperCase()})` : '';
+}
+const CFS_KEYS = new Set(['key839', 'key840']);
+
 export function describeMirroredKlipperFault(code: number, values: string): string | null {
   if (code < 2000 || code >= 3000) return null;
   const key = `key${code - 2000}`;
   const nums = (values.match(/-?\d+(?:\.\d+)?/g) || []).map(Number);
   const xyz = nums.length >= 3 ? `: X${nums[0].toFixed(1)} Y${nums[1].toFixed(1)} Z${nums[2].toFixed(1)}` : '';
-  const text = KLIPPER_TEXT[key] ? `${KLIPPER_TEXT[key]} (${key})${key === 'key586' ? xyz : ''}` : `Klipper error ${key}`;
+  const where = key === 'key586' ? xyz : CFS_KEYS.has(key) ? cfsSlot(values) : '';
+  const text = KLIPPER_TEXT[key] ? `${KLIPPER_TEXT[key]}${where} (${key})` : `Klipper error ${key}`;
   return KLIPPER_HINTS[key] ? `${text}. ${KLIPPER_HINTS[key]}` : text;
 }
 
@@ -55,5 +65,6 @@ export function describeKlipperError(raw: string | undefined | null): { code?: s
   // Prefer our English text when Creality's message isn't (e.g. key789 is in Chinese).
   if (code && KLIPPER_TEXT[code] && /[^\x00-\x7F]/.test(msg)) msg = KLIPPER_TEXT[code];
   if (code === 'key789' && values.length) msg = `${msg} on ${values.join(', ')}`;
+  if (code && CFS_KEYS.has(code) && KLIPPER_TEXT[code]) msg = `${KLIPPER_TEXT[code]}${cfsSlot(values.join(','))}`;
   return { code, text: `${msg}${code ? ` (${code})` : ''}`, hint: code ? KLIPPER_HINTS[code] : undefined };
 }
