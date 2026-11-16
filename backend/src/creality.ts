@@ -30,10 +30,16 @@ const KNOWN: Record<number, string> = {
   // master-server.log: "ai detect discover foreign objects" (pre-print foreign-object check, confidence >= 62.5%)
   104: 'AI camera found a foreign object on the bed during the pre-print check. Remove it (or check the plate edge) and restart',
   521: 'AI camera detected objects on the bed before printing. Clear the build plate and restart',
+  // Not confirmed (Luffy's Creality logs are unreachable): seen on Luffy 25-30 min into prints (2026-11-10/14/16),
+  // the print carries on and the code clears when it ends. The K1C runs its AI spaghetti ("pasta") check during prints.
+  509: 'AI camera warning during printing (probably the spaghetti / print-quality check)',
 };
 
 export function describeFault(f: CrealityFault): string {
-  return KNOWN[f.code] || describeMirroredKlipperFault(f.code, f.message) || f.message || `Creality error ${f.code}`;
+  return KNOWN[f.code] || describeMirroredKlipperFault(f.code, f.message) || f.message
+    // 5xx are the firmware's AI camera checks (521, 509, ...): say so rather than a bare number.
+    || (f.code >= 500 && f.code < 600 ? `AI camera check (code ${f.code}): the printer's camera flagged something` : '')
+    || `Creality error ${f.code}`;
 }
 
 const SILENCE_MS = 120_000;  // no messages this long -> assume a dead socket, reconnect
