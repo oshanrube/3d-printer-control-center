@@ -103,6 +103,11 @@ export class WebrtcRelay {
   private browser?: Browser;
   private launching?: Promise<Browser | undefined>;
   private pages = new Map<number, Rec>();
+  // After a failed connection, wait before the next one: the printer only drops the old
+  // session ~5 s after we leave, and a new one made meanwhile gets no video, which kept
+  // all WebRTC cameras in a reconnect loop (2026-11-17). Backoff grows on repeated failures.
+  private retryAt = new Map<number, number>();
+  private failures = new Map<number, number>();
   available = true;
 
   async init() {
@@ -141,11 +146,16 @@ export class WebrtcRelay {
       if (!why) return;
       // The connection died (printer reboot, Wi-Fi drop, ...): rebuild the page,
       // keeping its viewer hold so live viewing carries on.
-      console.log(`[webrtc-relay] restarting camera for ${printer.name}: ${why}`);
+      const n = (this.failures.get(printer.id) ?? 0) + (existing.lastFrameAt ? 0 : 1);
+      this.failures.set(printer.id, existing.lastFrameAt ? 0 : n);
+      const wait = Math.min(120_000, 10_000 * 2 ** Math.max(0, n - 1));
+      console.log(`[webrtc-relay] restarting camera for ${printer.name}: ${why} (next try in ${Math.round(wait / 1000)} s)`);
       this.pages.delete(printer.id);
       try { await existing.page?.close(); } catch { /* ignore */ }
-      return this.start(printer, existing.holdUntil);
+      this.retryAt.set(printer.id, Date.now() + wait);
+      return;
     }
+    if (Date.now() < (this.retryAt.get(printer.id) ?? 0)) return;   // waiting for the printer to drop the old session
     return this.start(printer);
   }
 
@@ -169,7 +179,7 @@ export class WebrtcRelay {
     try {
       const page = await browser.newPage();
       rec.page = page;
-      await page.exposeFunction('__frame', (b64: string) => { rec.lastFrame = Buffer.from(b64, 'base64'); rec.lastFrameAt = Date.now(); });
+      await page.exposeFunction('__frame', (b64: string) => { rec.lastFrame = Buffer.from(b64, 'base64'); rec.lastFrameAt = Date.now(); this.failures.set(printer.id, 0); });
       await page.exposeFunction('__err', (m: string) => { rec.error = m || 'error'; });
       const host = String(printer.ip).replace(/^https?:\/\//, '').split(':')[0];
       await page.setContent(relayHtml(host, printer.webrtcPort || 8000), { waitUntil: 'load' });
