@@ -412,7 +412,7 @@ function JobsTab() {
       <div class="jobs-switches">
         <label class="inv-check">
           <input type="checkbox" checked={st.autoLoad} onChange={(e: any) => { const on = e.currentTarget.checked; e.currentTarget.checked = st.autoLoad;
-            set({ autoLoad: on }, on ? 'Turn on auto-load? Planned plates will be uploaded to ready printers, and their OTHER G-code files deleted. Printing still needs you to start it.' : 'Turn off auto-load? Nothing new is sent to printers.'); }} />
+            set({ autoLoad: on }, on ? 'Turn on auto-load? Planned plates are put on ready printers (uploaded if the file isn\'t there yet). Printing still needs you to start it.' : 'Turn off auto-load? Nothing new is sent to printers.'); }} />
           <b>Auto-load jobs</b> <span class="muted">{st.autoLoad ? 'on: ready printers get their next plate' : 'off: plan only, nothing is sent to printers'}</span>
         </label>
         <label class="inv-check">

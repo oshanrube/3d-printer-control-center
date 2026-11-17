@@ -4,8 +4,8 @@
 // Safety: both master switches start OFF.
 //  - Auto-load (kv store:autoload): off = plan only, nothing is sent to printers.
 //  - Store writes (kv store:writes): off = dry run, store stock changes are logged, not made.
-// Load-only (owner's rule): files are uploaded and the printer's other G-code files deleted,
-// but printing is started by the owner (screen, or ▶ Start on the card).
+// Load-only (owner's rule): the plate's file is put on the printer (reused if the same file is
+// already there), other files are left alone, and printing is started by the owner.
 import type { FastifyInstance } from 'fastify';
 import { readFileSync } from 'node:fs';
 import { join, basename } from 'node:path';
@@ -16,7 +16,7 @@ import type { LiveState, PrinterEvent } from './types.js';
 import { itemColour, syncStore } from './inventory.js';
 import { activeJob, plan, takeParts } from './store-jobs.js';
 import { addStock } from './store.js';
-import { deleteGcode, listGcodes, printState, startPrint, uploadGcode } from './printer-files.js';
+import { listGcodes, printState, startPrint, uploadGcode } from './printer-files.js';
 import type { StoreOption } from './store.js';
 
 db.exec(`
@@ -75,17 +75,17 @@ async function loadOne(fleet: Fleet, report: Report, job: ReturnType<typeof plan
     JSON.stringify(job.forItems), Date.now());
   const id = Number(info.lastInsertRowid);
   try {
-    await uploadGcode(printer, name, readFileSync(join(config.dataDir, file.path)));
-    let removed = 0;
-    for (const f of await listGcodes(printer)) {
-      if (f.path === name) continue;
-      await deleteGcode(printer, f.path).then(() => removed++).catch(e => console.warn(`[store] ${printer.name}: couldn't delete ${f.path}: ${e?.message || e}`));
-    }
-    setJob(id, { status: 'loaded', loaded_at: Date.now(), note: `${removed} other file(s) removed` });
-    console.log(`[store] job ${id}: loaded ${name} on ${printer.name} (${reason}), removed ${removed} other file(s)`);
+    // Reuse the copy already on the printer when it's the same file (same name and size);
+    // otherwise upload it. Other files on the printer are left alone (owner's call, 2026-11-17).
+    const onPrinter = (await listGcodes(printer)).find(f => f.path === name);
+    const reused = !!onPrinter && onPrinter.size === file.size;
+    if (!reused) await uploadGcode(printer, name, readFileSync(join(config.dataDir, file.path)));
+    const how = reused ? 'already on the printer' : onPrinter ? 'uploaded (replaced an older copy)' : 'uploaded';
+    setJob(id, { status: 'loaded', loaded_at: Date.now(), note: how });
+    console.log(`[store] job ${id}: ${name} on ${printer.name} (${reason}): ${how}`);
     report({ printerId: printer.id, printerName: printer.name, type: 'store_job', severity: 'warning',
       title: `📦 ${printer.name}: ${partName(job.partId)} loaded`,
-      message: `Loaded ${describe(jobRow(id))} for ${job.forItems.join(', ')}. Clear the bed and start “${name}”.`,
+      message: `${describe(jobRow(id))} for ${job.forItems.join(', ')} is ready on the printer (${jobRow(id).note}). Clear the bed and start “${name}”.`,
       filename: name, actionTaken: 'loaded' });
   } catch (e: any) {
     setJob(id, { status: 'failed', ended_at: Date.now(), note: `loading failed: ${e?.message || e}` });
