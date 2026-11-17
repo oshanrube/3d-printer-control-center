@@ -35,6 +35,9 @@ services:
       # Stage 2 (optional): vision LLM second opinion (enabled when AI_API_KEY is set).
       - AI_API_KEY=${AI_API_KEY:-}
       - AI_BASE_URL=${AI_BASE_URL:-http://10.0.68.30:8888}
+      # Online store (PrestaShop webservice).
+      - STORE_URL=${STORE_URL:-https://store.onicindustries.com}
+      - STORE_API_KEY=${STORE_API_KEY:-}
     volumes:
       # On the Pi: DATA_PATH=/media/nvme/printer-control-center/data (in .env).
       - ${DATA_PATH:-./data}:/data

@@ -61,6 +61,12 @@ export const config = {
     enabled: process.env.AI_ENABLED === '1' || (process.env.AI_ENABLED !== '0' && !!process.env.AI_API_KEY),
     timeoutSec: parseInt(process.env.AI_TIMEOUT_SEC || '90', 10),
   },
+
+  // Online store (PrestaShop webservice) whose stock the controller keeps topped up.
+  store: {
+    url: (process.env.STORE_URL || 'https://store.onicindustries.com').replace(/\/+$/, ''),
+    apiKey: process.env.STORE_API_KEY || '',
+  },
 };
 
 export type Config = typeof config;
