@@ -97,6 +97,8 @@ async function loadOne(fleet: Fleet, report: Report, job: ReturnType<typeof plan
 // ---------------------------------------------------------------------------
 // Following a job through the printer's states
 
+const idleSince = new Map<number, number>();   // printing jobs whose printer came back idle (power cut)
+
 export function track(fleet: Fleet, report: Report, s: LiveState, prev: string | undefined) {
   const j = activeJob(s.printerId);
   if (!j || !s.online || s.state === 'offline') return;
@@ -108,6 +110,18 @@ export function track(fleet: Fleet, report: Report, s: LiveState, prev: string |
     return;
   }
   if (j.status !== 'printing') return;
+  // After a power cut the printer comes back idle (prev 'offline') and the print can still be
+  // resumed from its screen, so that alone isn't a failure. If it stays idle for an hour,
+  // the print was abandoned.
+  if (IDLE.includes(s.state) && prev === 'offline') { idleSince.set(j.id, Date.now()); return; }
+  if (IDLE.includes(s.state) && idleSince.has(j.id)) {
+    if (Date.now() - idleSince.get(j.id)! > 60 * 60_000) {
+      idleSince.delete(j.id);
+      setJob(j.id, { status: 'failed', ended_at: Date.now(), note: 'not resumed within an hour of the printer restarting' });
+    }
+    return;
+  }
+  idleSince.delete(j.id);
   if (s.state === 'complete' && file === j.printer_file) {
     setJob(j.id, { status: 'printed', ended_at: Date.now() });
     report({ printerId: s.printerId, printerName: name, type: 'store_job', severity: 'info',

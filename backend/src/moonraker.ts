@@ -188,6 +188,11 @@ export class MoonrakerClient extends EventEmitter {
   }
 
   get sensorNames() { return this.subscribedSensors; }
+  /** Seconds since the printer's host booted (Moonraker machine.proc_stats). */
+  async uptime(): Promise<number | null> {
+    const r = await this.rpc('machine.proc_stats', {}).catch(() => null);
+    return typeof r?.system_uptime === 'number' ? r.system_uptime : null;
+  }
   /** True if any filament sensor pauses the print by itself on runout. */
   get pausesOnRunout() { return this.selfPausingSensors.size > 0; }
 

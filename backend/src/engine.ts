@@ -28,6 +28,8 @@ interface Track {
   lightOnDone?: boolean;        // light already handled for the current print / preparation
   acc?: { n: number; power: number; nPower: number; vel: number; nVel: number; z: number | null; fan0: number | null };
   inPrint?: boolean;            // we've seen this print running (printing/paused)
+  lostDuringPrint?: { at: number; bed: number; file: string | null };   // went offline mid-print
+  powerLoss?: { since: number; bed: number; file: string | null; lastRemind: number };   // rebooted mid-print, waiting for resume
   lastKlipperError?: string;    // last Klipper error already alerted
   faultAlerted?: boolean;       // current Creality fault was alerted (not a mirror of a Klipper error)
 }
@@ -69,7 +71,7 @@ export class Engine {
   start() {
     this.fleet.on('state', (s: LiveState) => this.onState(s));
     // Heater watchdog also runs on a timer, in case a printer goes quiet.
-    setInterval(() => { for (const s of this.fleet.getStates()) { this.checkHeaters(s); this.checkIdlePeripherals(s); this.checkPauseWatch(s); } }, 30_000);
+    setInterval(() => { for (const s of this.fleet.getStates()) { this.checkHeaters(s); this.checkIdlePeripherals(s); this.checkPauseWatch(s); this.remindPowerLoss(s); } }, 30_000);
     // Auto-pauses survive a restart, so the reminders keep coming.
     for (const p of this.fleet.getStates()) {
       try { const w = JSON.parse(kv.get(`autopause:${p.printerId}`) || 'null'); if (w?.kind) this.pauseWatch.set(p.printerId, w); } catch { /* none */ }
@@ -219,8 +221,19 @@ export class Engine {
     // its tracking here; the state after reconnecting decides what happened.
     if (prev && prev.online && !s.online) {
       const during = prev.state === 'printing' || prev.state === 'paused';
+      if (during) t.lostDuringPrint = { at: Date.now(), bed: prev.bedTarget, file: prev.filename ?? null };
       mk('printer_offline', during ? 'warning' : 'info', `${name} offline`,
          during ? `Lost connection to ${name} during a print.` : `${name} went offline.`);
+    }
+
+    // ---- Power loss: back from offline without its print, freshly booted ----
+    if (t.lostDuringPrint && s.online && s.state !== 'offline') {
+      const lost = t.lostDuringPrint; t.lostDuringPrint = undefined;
+      if (s.state !== 'printing' && s.state !== 'paused') this.checkPowerLoss(s, lost).catch(e => console.warn('[engine] power-loss check:', e?.message || e));
+    }
+    if (t.powerLoss && s.online && (s.state === 'printing' || s.state === 'paused')) {
+      mk('info', 'info', `⚡ ${name} resumed after the power cut`, `${s.filename || 'The print'} is running again.`);
+      t.powerLoss = undefined;
     }
 
     // ---- Print lifecycle ----
@@ -407,8 +420,44 @@ export class Engine {
    * halted in the firmware before reaching Klipper) -> alert, then turn them off.
    * A paused print only gets the alert, so it can still be resumed.
    */
+  /**
+   * A printer that went offline mid-print came back without it. If it has just booted, the
+   * power went (2026-11-16: a power cut; the screen's power-loss "resume" was pressed too late
+   * and the batch was ruined). Keep the bed hot so parts stay stuck, and push until resumed.
+   */
+  private async checkPowerLoss(s: LiveState, lost: { at: number; bed: number; file: string | null }) {
+    const client = this.fleet.client(s.printerId);
+    const up = await client?.uptime();
+    if (up === null || up === undefined || up > 15 * 60) return;      // not a reboot: a network blip
+    const t = this.track(s.printerId);
+    const name = this.printerName(s.printerId);
+    const bed = Math.round(lost.bed);
+    if (bed > 0) await client!.gcode(`M140 S${bed}`).catch(e => console.warn(`[engine] ${name}: bed hold failed: ${e?.message || e}`));
+    t.powerLoss = { since: Date.now(), bed, file: lost.file, lastRemind: Date.now() };
+    console.log(`[engine] ${name} rebooted mid-print (up ${Math.round(up)} s): holding bed at ${bed}°C, alerting`);
+    this.emit({ printerId: s.printerId, printerName: name, type: 'printer_fault', severity: 'critical',
+      title: `⚡ ${name} lost power mid-print`,
+      message: `${name} restarted without its print${lost.file ? ` (${lost.file})` : ''}. Press Resume on its screen (power-loss recovery) now.${bed > 0 ? ` The bed is being kept at ${bed}°C so the parts stay stuck.` : ''}`,
+      filename: lost.file, actionTaken: bed > 0 ? `bed held at ${bed}°C` : null });
+  }
+
+  private remindPowerLoss(s: LiveState) {
+    const t = this.track(s.printerId);
+    const w = t.powerLoss; if (!w) return;
+    const now = Date.now();
+    if (now - w.since > 60 * 60_000) { t.powerLoss = undefined; return; }   // give up after an hour
+    if (now - w.lastRemind < 2 * 60_000) return;
+    w.lastRemind = now;
+    const name = this.printerName(s.printerId);
+    this.emit({ printerId: s.printerId, printerName: name, type: 'pause_reminder', severity: 'critical',
+      title: `⚡ ${name} is still waiting to resume (${Math.round((now - w.since) / 60_000)} min)`,
+      message: `Press Resume on ${name}'s screen to continue ${w.file || 'the print'} after the power cut, or cancel it there.`,
+      filename: w.file, actionTaken: null });
+  }
+
   private checkHeaters(s: LiveState) {
     const t = this.track(s.printerId);
+    if (t.powerLoss) return;   // the bed is deliberately kept hot while a power-loss resume is pending
     const now = Date.now();
     const heating = s.online && (s.bedTarget > 0 || s.extruderTarget > 0);
     const preprint = !!s.vendorBusy && s.state !== 'printing';
