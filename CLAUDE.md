@@ -215,6 +215,7 @@ Compares a print with a **successful run of the same file at the same step**. Kl
 - Neither the Pi nor the old agent container has `sshpass`. For printer SSH, use `SSH_ASKPASS` + `SSH_ASKPASS_REQUIRE=force` + `setsid`.
 - The old agent container had no `node`. Run Node scripts inside the app container: put the file in `data/`, then `docker exec 3d-printer-control-center node /data/<file>`.
 - **Browser/API tests must only touch records the test created** (a throwaway part or item it sets up and removes). On 2026-11-17 a UI test clicked "the first checkbox" and "the first Edit recipe" on the live Inventory page and changed two of the owner's configured items (fixed by hand). The live store/inventory data is the owner's.
+- **Before deploying, check no store job is uploading** (`GET /api/store/jobs`, status `loading`): a restart cuts the upload off (2026-11-17 Sanji). Startup marks such jobs cancelled so they're reloaded, but the printer waits until then.
 - **Never start the app with `docker run`**: always `docker compose build control-center && docker compose up -d control-center`. A bare `docker run` has no data volume or `.env` (see the 2026-11-15 incident).
 - Commit messages with apostrophes break `sh -c '...'` quoting: write the message to a file and use `git commit -F`.
 - Auto-mode safety checks blocked: writes or service changes on printers over SSH, disabling logging/metrics services on the Pi, and reading printer init scripts. Ask the user, or have them add a permission rule; don't work around it.

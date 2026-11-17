@@ -187,6 +187,10 @@ export async function assemble(report: Report): Promise<number> {
 // Routes and triggers
 
 export function registerStoreDispatch(app: FastifyInstance, fleet: Fleet, report: Report) {
+  // An upload cut off by an app restart leaves its job "loading" forever, which also blocks
+  // that printer (2026-11-17, Sanji). Mark such jobs interrupted; they are planned again.
+  const stale = db.prepare(`UPDATE store_jobs SET status = 'cancelled', ended_at = ?, note = 'upload interrupted by an app restart' WHERE status = 'loading'`).run(Date.now());
+  if (stale.changes) console.log(`[store] ${stale.changes} interrupted upload(s) marked cancelled; they will be loaded again`);
   const prev = new Map<number, string>();
   fleet.on('state', (s: LiveState) => {
     track(fleet, report, s, prev.get(s.printerId));
