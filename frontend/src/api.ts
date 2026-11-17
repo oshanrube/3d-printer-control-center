@@ -29,7 +29,7 @@ export interface PrinterEvent {
 export interface StoreOption { group: string; value: string }
 export interface StoreItem {
   productId: number; combinationId: number; reference: string; productName: string; options: StoreOption[];
-  colour: string | null; colourFromStore: boolean; defaultColour: string; label: string; storeQty: number; inStore: boolean; enabled: boolean; minQty: number;
+  colour: string | null; colourFromStore: boolean; hasStoreColour: boolean; ignoreStoreColour: boolean; defaultColour: string; label: string; storeQty: number; inStore: boolean; enabled: boolean; minQty: number;
   syncedAt: number | null; recipe: { partId: number; qty: number }[];
 }
 export interface SyncStatus { lastSyncAt: number | null; lastAttemptAt: number | null; lastError: string | null; items: number; reason: string | null; running: boolean }
@@ -114,6 +114,8 @@ export const api = {
   storeSync: (reason: 'manual' | 'dashboard') => j<{ status: SyncStatus; items: StoreItem[] }>('/api/store/sync', { method: 'POST', body: JSON.stringify({ reason }) }),
   updateItem: (i: StoreItem, patch: { enabled?: boolean; minQty?: number; defaultColour?: string }) =>
     j<StoreItem>(`/api/store/items/${i.productId}/${i.combinationId}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+  updateProduct: (productId: number, patch: { ignoreStoreColour?: boolean }) =>
+    j<StoreItem[]>(`/api/store/products/${productId}`, { method: 'PATCH', body: JSON.stringify(patch) }),
   setRecipe: (i: StoreItem, parts: { partId: number; qty: number }[]) =>
     j<StoreItem>(`/api/store/items/${i.productId}/${i.combinationId}/recipe`, { method: 'PUT', body: JSON.stringify({ parts }) }),
   models: () => j<PrinterModel[]>('/api/store/models'),

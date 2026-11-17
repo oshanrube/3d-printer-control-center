@@ -52,6 +52,12 @@ db.exec(`DELETE FROM part_gcodes`);
 if (!(db.prepare('PRAGMA table_info(store_items)').all() as any[]).some(c => c.name === 'default_colour'))
   db.exec(`ALTER TABLE store_items ADD COLUMN default_colour TEXT NOT NULL DEFAULT ''`);
 
+// Per product: does the store's colour option decide the filament colour? (Not for products
+// where any colour can be printed, e.g. the antlers, 2026-11-17.)
+db.exec(`CREATE TABLE IF NOT EXISTS store_products (product_id INTEGER PRIMARY KEY, ignore_store_colour INTEGER NOT NULL DEFAULT 0)`);
+const ignoresStoreColour = (productId: number) =>
+  !!(db.prepare('SELECT ignore_store_colour v FROM store_products WHERE product_id = ?').get(productId) as any)?.v;
+
 /** Creality's model code (from the :9999 feed) -> the name slicers write as `printer_model`. */
 export const MODEL_NAMES: Record<string, string> = { K1C: 'K1C', K1: 'K1', F008: 'K2 Plus', K1MAX: 'K1 Max' };
 const modelName = (m: string) => MODEL_NAMES[m] || m;
@@ -121,8 +127,9 @@ function anyPrinterFree(fleet: Fleet): boolean {
 // Rows -> API objects
 
 const colourOf = (opts: StoreOption[]) => opts.find(o => /colou?r/i.test(o.group))?.value ?? null;
-/** The colour an item is printed in: its store colour option, else the one chosen on the dashboard. */
-export const itemColour = (opts: StoreOption[], defaultColour: string) => colourOf(opts) ?? (defaultColour || null);
+/** The colour an item is printed in: its store colour option (unless the product ignores it), else the one chosen on the dashboard. */
+export const itemColour = (opts: StoreOption[], defaultColour: string, productId?: number) =>
+  (productId !== undefined && ignoresStoreColour(productId) ? null : colourOf(opts)) ?? (defaultColour || null);
 
 function itemsWithRecipes() {
   const recipes = db.prepare('SELECT * FROM recipes').all() as any[];
@@ -130,8 +137,9 @@ function itemsWithRecipes() {
     const options: StoreOption[] = JSON.parse(r.options_json || '[]');
     return {
       productId: r.product_id, combinationId: r.combination_id, reference: r.reference,
-      productName: r.product_name, options, colour: itemColour(options, r.default_colour),
-      colourFromStore: !!colourOf(options), defaultColour: r.default_colour,
+      productName: r.product_name, options, colour: itemColour(options, r.default_colour, r.product_id),
+      colourFromStore: !!colourOf(options) && !ignoresStoreColour(r.product_id), hasStoreColour: !!colourOf(options),
+      ignoreStoreColour: ignoresStoreColour(r.product_id), defaultColour: r.default_colour,
       label: itemLabel({ productId: r.product_id, combinationId: r.combination_id, reference: r.reference,
         productName: r.product_name, options, quantity: r.store_qty }),
       storeQty: r.store_qty, inStore: !!r.in_store, enabled: !!r.enabled, minQty: r.min_qty, syncedAt: r.synced_at,
@@ -228,6 +236,16 @@ export function registerInventory(app: FastifyInstance, fleet: Fleet) {
       db.prepare('UPDATE store_items SET min_qty = ? WHERE product_id = ? AND combination_id = ?').run(q, Number(pid), Number(cid));
     }
     return itemsWithRecipes().find(i => i.productId === Number(pid) && i.combinationId === Number(cid));
+  });
+
+  // Product-level settings (shared by all its variants).
+  app.patch('/api/store/products/:pid', async (req, reply) => {
+    const pid = Number((req.params as any).pid); const b = (req.body || {}) as any;
+    if (!db.prepare('SELECT 1 FROM store_items WHERE product_id = ?').get(pid)) return reply.code(404).send({ error: 'Unknown product.' });
+    if (b.ignoreStoreColour !== undefined)
+      db.prepare(`INSERT INTO store_products (product_id, ignore_store_colour) VALUES (?, ?)
+        ON CONFLICT (product_id) DO UPDATE SET ignore_store_colour = excluded.ignore_store_colour`).run(pid, b.ignoreStoreColour ? 1 : 0);
+    return itemsWithRecipes().filter(i => i.productId === pid);
   });
 
   app.put('/api/store/items/:pid/:cid/recipe', async (req, reply) => {

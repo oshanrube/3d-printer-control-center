@@ -144,7 +144,7 @@ export function plan(fleet: Fleet) {
       const options: StoreOption[] = JSON.parse(r.options_json || '[]');
       const label = `${r.reference || r.product_name}`;
       const recipe = recipes.filter(x => x.product_id === r.product_id && x.combination_id === r.combination_id);
-      return { r, label, colour: itemColour(options, r.default_colour), recipe,
+      return { r, label, colour: itemColour(options, r.default_colour, r.product_id), recipe,
         short: Math.max(0, r.min_qty - r.store_qty), fraction: (r.min_qty - r.store_qty) / r.min_qty };
     })
     .filter(x => x.short > 0)

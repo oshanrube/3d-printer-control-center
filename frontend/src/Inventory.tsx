@@ -112,6 +112,13 @@ function ItemsTab({ items, parts, onItem, colours }: { items: StoreItem[] | null
               <b>{name}</b>
               <span class="muted">{all.length > 1 || all[0]?.combinationId ? `${all.length} variants` : all[0]?.reference}{managed ? ` · ${managed} managed` : ''}</span>
               <div class="spacer" />
+              {isOpen && all[0]?.hasStoreColour && (
+                <label class="inv-check" onClick={(e) => e.stopPropagation()} title="Off: the store's colour option is ignored for printing (any colour, or the item's “Print in” choice)">
+                  <input type="checkbox" checked={!all[0].ignoreStoreColour}
+                    onChange={async (e: any) => { try { for (const u of await api.updateProduct(pid, { ignoreStoreColour: !e.currentTarget.checked })) onItem(u); } catch (err) { fail('Saving')(err); } }} />
+                  Print in the store colour
+                </label>
+              )}
               {isOpen && all.length > 1 && (
                 <span onClick={(e) => e.stopPropagation()}>
                   <button class="chip" onClick={() => setAll(pid, true).catch(fail('Saving'))}>Manage all</button>{' '}
@@ -146,7 +153,7 @@ function ItemRow({ item: i, parts, onItem, colours }: { item: StoreItem; parts: 
         {i.enabled && (
           <div class={`muted ${i.recipe.length ? '' : 'inv-warn'}`}>
             {i.recipe.length ? `Made of: ${recipe}` : '⚠️ No recipe yet: say which printed parts make one'}
-            {i.recipe.length > 0 && !i.colourFromStore && (i.colour ? ` · printed in ${i.colour}` : ' · any colour')}{' '}
+            {i.recipe.length > 0 && (i.colourFromStore ? ` · printed in ${i.colour}` : i.colour ? ` · printed in ${i.colour}` : ' · any colour')}{' '}
             <button class="chip" onClick={() => setEditing(!editing)}>{editing ? 'Close' : 'Edit recipe'}</button>
           </div>
         )}
@@ -194,11 +201,12 @@ function RecipeEditor({ item, parts, colours, onSaved }: { item: StoreItem; part
         ? <p class="muted">Colour: <b>{item.colour}</b> (from the store variant)</p>
         : (
           <label class="muted">Print in{' '}
+            {item.hasStoreColour && <span>The store colour isn't used for this product. </span>}
             <select value={colour} onChange={(e: any) => setColour(e.currentTarget.value)}>
               <option value="">Any colour (whatever is loaded)</option>
               {colours.map(c => <option value={c}>{c}</option>)}
             </select>
-            {' '}<span>This store item has no colour option, so choose it here.</span>
+            {' '}{!item.hasStoreColour && <span>This store item has no colour option, so choose it here.</span>}
           </label>
         )}
       <button class="btn btn-sm btn-primary" onClick={async () => {
