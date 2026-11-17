@@ -1,5 +1,6 @@
 import puppeteer, { type Browser, type Page } from 'puppeteer-core';
 import type { Printer } from './types.js';
+import { config } from './config.js';
 
 /**
  * WebRTC -> snapshot relay.
@@ -50,16 +51,40 @@ function munge(offer, answer){
 (async()=>{
  try{
   const useKf=KEYFRAMES_ONLY && typeof RTCRtpReceiver.prototype.createEncodedStreams==='function';
+  // WebCodecs path: decode keyframes ourselves instead of through the <video> player. The K1C/K2
+  // local WebRTC service can send RTP timestamps that run ~20x fast; Chromium's jitter buffer then
+  // never renders a frame (2026-11-17, all WebRTC cameras), while the frames themselves are fine.
+  const useWc=useKf && typeof VideoDecoder==='function';
+  function codecOf(d){for(let i=0;i+6<d.length;i++){if(d[i]===0&&d[i+1]===0&&d[i+2]===1&&(d[i+3]&31)===7){const h=function(x){return (x<16?'0':'')+x.toString(16);};return 'avc1.'+h(d[i+4])+h(d[i+5])+h(d[i+6]);}}return null;}
   const pc=new RTCPeerConnection(useKf?{encodedInsertableStreams:true}:{});
   const tr=pc.addTransceiver('video',{direction:'recvonly'});
   try{const h=RTCRtpReceiver.getCapabilities('video').codecs.filter(c=>/H264/i.test(c.mimeType));if(h.length&&tr.setCodecPreferences)tr.setCodecPreferences(h);}catch(e){}
-  if(useKf){
+  if(useKf && !useWc){
     // Drop delta frames before the decoder; each keyframe is self-contained.
     const s=tr.receiver.createEncodedStreams();
     s.readable.pipeThrough(new TransformStream({transform(f,ctl){if(f.type==='key')ctl.enqueue(f);}})).pipeTo(s.writable);
   }
   const v=document.getElementById('v'), c=document.getElementById('c'), ctx=c.getContext('2d');
   pc.ontrack=e=>{v.srcObject=e.streams[0];v.play().catch(()=>{});};
+  if(useWc){
+    const s=tr.receiver.createEncodedStreams();
+    let dec=null, cfg=null, busy=false;
+    const draw=function(vf){const w=Math.min(800,vf.displayWidth), hh=Math.round(w*vf.displayHeight/vf.displayWidth);
+      if(c.width!==w){c.width=w;c.height=hh;} ctx.drawImage(vf,0,0,w,hh);
+      const d=c.toDataURL('image/jpeg',0.6); if(window.__frame) window.__frame(d.slice(d.indexOf(',')+1));};
+    s.readable.pipeTo(new WritableStream({write(f){
+      if(f.type!=='key'||busy) return;          // keyframes only; skip one while the last is still decoding
+      const data=new Uint8Array(f.data), codec=codecOf(data);
+      if(!dec||(codec&&codec!==cfg)){
+        try{if(dec)dec.close();}catch(e){}
+        cfg=codec||'avc1.640028';
+        dec=new VideoDecoder({output:function(vf){try{draw(vf);}finally{vf.close();busy=false;}},error:function(){busy=false;dec=null;}});
+        dec.configure({codec:cfg,optimizeForLatency:true});
+      }
+      busy=true;
+      try{dec.decode(new EncodedVideoChunk({type:'key',timestamp:Math.round(performance.now()*1000),data:data}));}catch(e){busy=false;dec=null;}
+    }}));
+  }
   // Tell Node when the connection dies so it can rebuild this page.
   pc.onconnectionstatechange=()=>{const s=pc.connectionState;if((s==='failed'||s==='closed')&&window.__err)window.__err('connection '+s);};
   await pc.setLocalDescription(await pc.createOffer());
@@ -182,6 +207,8 @@ export class WebrtcRelay {
       await page.exposeFunction('__frame', (b64: string) => { rec.lastFrame = Buffer.from(b64, 'base64'); rec.lastFrameAt = Date.now(); this.failures.set(printer.id, 0); });
       await page.exposeFunction('__err', (m: string) => { rec.error = m || 'error'; });
       const host = String(printer.ip).replace(/^https?:\/\//, '').split(':')[0];
+      // WebCodecs needs a secure context: load a localhost page first, then write the relay into it.
+      await page.goto(`http://127.0.0.1:${config.port}/relay-blank`, { waitUntil: 'load' }).catch(() => {});
       await page.setContent(relayHtml(host, printer.webrtcPort || 8000), { waitUntil: 'load' });
       rec.startedAt = Date.now();
       rec.starting = false;

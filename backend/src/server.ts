@@ -147,6 +147,9 @@ export function buildServer(fleet: Fleet, ai: { current?: AiAnalyzer } = {}, ref
     return r.ok ? r : reply.code(409).send(r);
   });
 
+  // Blank localhost page for the WebRTC relay (WebCodecs needs a secure context).
+  app.get('/relay-blank', async (_req, reply) => reply.type('text/html').send('<!doctype html><title>relay</title>'));
+
   app.get('/api/events', async (req) => {
     const limit = Math.min(500, Number((req.query as any)?.limit) || 100);
     return eventsRepo.recent(limit);
