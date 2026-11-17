@@ -26,8 +26,12 @@ function EditField({ value, onSave, type = 'text', ...rest }: { value: string | 
     onKeyDown={(e: any) => { if (e.key === 'Enter') e.currentTarget.blur(); if (e.key === 'Escape') { setV(String(value)); setEditing(false); } }} />;
 }
 
-export function InventoryModal({ onClose }: { onClose: () => void }) {
-  const [tab, setTab] = useState<'items' | 'parts' | 'queue' | 'colours'>('items');
+export type InventoryTab = 'items' | 'parts' | 'colours' | 'queue';
+export const INVENTORY_TABS: InventoryTab[] = ['items', 'parts', 'colours', 'queue'];
+
+/** The store inventory page (#/inventory[/tab]): the tab lives in the address, so reload and Back keep it. */
+export function InventoryPage({ tab }: { tab: InventoryTab }) {
+  const setTab = (t: InventoryTab) => { location.hash = `#/inventory/${t}`; };
   const [items, setItems] = useState<StoreItem[] | null>(null);
   const [status, setStatus] = useState<SyncStatus | null>(null);
   const [parts, setParts] = useState<Part[]>([]);
@@ -49,8 +53,7 @@ export function InventoryModal({ onClose }: { onClose: () => void }) {
   const replacePart = (u: Part) => setParts(ps => ps.map(p => p.id === u.id ? u : p));
 
   return (
-    <div class="modal" onClick={(e) => e.target === e.currentTarget && onClose()}>
-      <div class="modal-box inv">
+    <section class="inv-page">
         <div class="inv-head">
           <h2>📦 Store inventory</h2>
           <div class="spacer" />
@@ -58,7 +61,6 @@ export function InventoryModal({ onClose }: { onClose: () => void }) {
             {status?.lastError ? `⚠️ Last sync failed (${ago(status.lastAttemptAt)}): ${status.lastError}` : `Synced ${ago(status?.lastSyncAt ?? null)} · ${status?.items ?? 0} items`}
           </span>
           <button class="btn btn-sm" disabled={syncing} onClick={syncNow}>{syncing ? 'Syncing…' : '↻ Sync now'}</button>
-          <button class="btn btn-sm btn-ghost" onClick={onClose}>Close</button>
         </div>
         <div class="row" style="margin-bottom:12px">
           <button class={`btn btn-sm ${tab === 'items' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setTab('items')}>Store items</button>
@@ -70,8 +72,7 @@ export function InventoryModal({ onClose }: { onClose: () => void }) {
         {tab === 'parts' && <PartsTab parts={parts} models={models} onPart={replacePart} reload={loadParts} stock={stock} colours={storeColours} />}
         {tab === 'queue' && <QueueTab />}
         {tab === 'colours' && <ColourTable />}
-      </div>
-    </div>
+    </section>
   );
 }
 

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { createPortal } from 'preact/compat';
 import { api, FAILURE_REASONS, type Printer, type PrinterEvent, type StoppedPrint } from './api';
-import { InventoryModal } from './Inventory';
+import { InventoryPage, INVENTORY_TABS, type InventoryTab } from './Inventory';
 import { StoreJobStrip } from './StoreJobs';
 import type { PrinterReadiness } from './api';
 import { useStore } from './store';
@@ -516,7 +516,7 @@ function Applier({ r, printers, onApply }: any) {
 /* ---------- app ---------- */
 export function App() {
   const { printers, events, connected, labelsVersion } = useStore();
-  const [modal, setModal] = useState<null | { kind: 'printer'; p: Printer | 'new' } | { kind: 'scan' } | { kind: 'labels' } | { kind: 'inventory' }>(null);
+  const [modal, setModal] = useState<null | { kind: 'printer'; p: Printer | 'new' } | { kind: 'scan' } | { kind: 'labels' }>(null);
   // Stopped prints still needing a failure reason (refreshed when one is labelled or a print stops).
   const [toLabel, setToLabel] = useState<StoppedPrint[]>([]);
   const [later, setLater] = useState<Set<number>>(new Set());
@@ -524,6 +524,20 @@ export function App() {
   useEffect(() => { loadLabels(); }, [labelsVersion]);
   useEffect(() => { const t = setInterval(loadLabels, 120_000); return () => clearInterval(t); }, []);
   const newestToLabel = (printerId: number) => toLabel.find(p => p.printerId === printerId && !later.has(p.id));
+  // Pages: #/ (printers) and #/inventory[/tab]. Hash routing: Back works, reload keeps the page.
+  const parseRoute = (): { page: 'printers' | 'inventory'; tab: InventoryTab } => {
+    const m = location.hash.match(/^#\/inventory(?:\/(\w+))?/);
+    const tab = (m?.[1] && INVENTORY_TABS.includes(m[1] as InventoryTab) ? m[1] : 'items') as InventoryTab;
+    return { page: m ? 'inventory' : 'printers', tab };
+  };
+  const [route, setRoute] = useState(parseRoute());
+  useEffect(() => {
+    const on = () => { setRoute(parseRoute()); window.scrollTo(0, 0); };
+    window.addEventListener('hashchange', on);
+    return () => window.removeEventListener('hashchange', on);
+  }, []);
+  useEffect(() => { if (route.page === 'printers') loadJobs(); }, [route.page]);
+
   // Opening the dashboard asks for a store sync (the server does it at most every 5 min).
   useEffect(() => {
     const sync = () => { if (!document.hidden) api.storeSync('dashboard').catch(() => {}); };
@@ -591,7 +605,10 @@ export function App() {
         {toLabel.length > 0 && (
           <button class="btn btn-ghost btn-sm" title="Failed prints that need a reason" onClick={() => setModal({ kind: 'labels' })}>🏷️ {toLabel.length}</button>
         )}
-        <button class="btn btn-ghost btn-sm" onClick={() => setModal({ kind: 'inventory' })} title="Store inventory">📦 Inventory</button>
+        <nav class="pages">
+          <a href="#/" class={`btn btn-sm ${route.page === 'printers' ? 'btn-primary' : 'btn-ghost'}`}>🖨️ Printers</a>
+          <a href={`#/inventory/${route.tab}`} class={`btn btn-sm ${route.page === 'inventory' ? 'btn-primary' : 'btn-ghost'}`}>📦 Inventory</a>
+        </nav>
         <button class="btn btn-ghost btn-sm" onClick={() => setModal({ kind: 'printer', p: 'new' })}>＋ Add</button>
         <button class="btn btn-ghost btn-sm" onClick={() => setModal({ kind: 'scan' })}>🔍 Scan</button>
         <button class="btn btn-ghost btn-sm" onClick={doPush} title="Notifications">
@@ -601,6 +618,7 @@ export function App() {
       </div>
 
       <main>
+        {route.page === 'inventory' ? <InventoryPage tab={route.tab} /> : <>
         {printers.length === 0 && <p class="muted" style="text-align:center;padding:40px">No printers yet. Click Add or Scan.</p>}
         <div class="grid">
           {sorted.map((p) => <PrinterCard key={p.id} printer={p} onEdit={(pr) => setModal({ kind: 'printer', p: pr })}
@@ -621,12 +639,12 @@ export function App() {
             ))}
           </section>
         )}
+        </>}
       </main>
 
       {modal?.kind === 'printer' && <PrinterModal printer={modal.p} onClose={() => setModal(null)} />}
       {modal?.kind === 'scan' && <ScanModal printers={printers} onClose={() => setModal(null)} />}
       {modal?.kind === 'labels' && <LabelModal onClose={() => setModal(null)} onChanged={loadLabels} />}
-      {modal?.kind === 'inventory' && <InventoryModal onClose={() => { setModal(null); loadJobs(); }} />}
     </div>
   );
 }

@@ -254,3 +254,9 @@ main{margin-top:16px}
 .inv-model .inv-slot > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .inv-model .inv-slot { flex-wrap: nowrap; }
 @media (max-width: 640px) { .inv-model .inv-slot { flex-wrap: wrap; } .inv-model .inv-slot > span { white-space: normal; } }
+
+/* Pages */
+nav.pages { display: inline-flex; gap: 6px; }
+nav.pages a { text-decoration: none; }
+.inv-page { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px 24px; max-width: 1200px; margin: 0 auto; }
+@media (max-width: 640px) { .inv-page { padding: 14px 12px; border-radius: 10px; } }
