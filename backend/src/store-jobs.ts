@@ -137,6 +137,24 @@ function bestFile(files: PartFile[], remaining: number): PartFile | null {
   return fit ?? [...files].sort((a, b) => a.units - b.units)[0];
 }
 
+/**
+ * Take up to `qty` of a part from a stock map keyed `part|colour`. An item with a colour only
+ * takes that colour; an "any colour" item takes uncoloured parts first, then any colour
+ * (most plentiful first). Returns how many were taken and from which colours.
+ */
+export function takeParts(stock: Map<string, number>, partId: number, colour: string | null, qty: number) {
+  const keys = colour ? [`${partId}|${colour}`]
+    : [`${partId}|`, ...[...stock.keys()].filter(k => k.startsWith(`${partId}|`) && k !== `${partId}|`)
+        .sort((a, b) => (stock.get(b) ?? 0) - (stock.get(a) ?? 0))];
+  let taken = 0; const from: [string, number][] = [];
+  for (const k of keys) {
+    if (taken >= qty) break;
+    const n = Math.min(stock.get(k) ?? 0, qty - taken);
+    if (n > 0) { stock.set(k, (stock.get(k) ?? 0) - n); taken += n; from.push([k.slice(k.indexOf('|') + 1), n]); }
+  }
+  return { taken, from };
+}
+
 export function plan(fleet: Fleet) {
   const colours = colourMap();
   const printers = fleet.getStates().map(s => readiness(fleet, s, colours));
@@ -178,8 +196,7 @@ export function plan(fleet: Fleet) {
       const part = parts.get(line.part_id); if (!part) continue;
       const key = `${line.part_id}|${x.colour ?? ''}`;
       let qty = line.qty * x.short;
-      const spare = onHand.get(key) ?? 0;
-      const used = Math.min(spare, qty); onHand.set(key, spare - used); qty -= used;
+      qty -= takeParts(onHand, line.part_id, x.colour, qty).taken;   // spares and plates on their way first
       if (!qty) continue;
       if (!need.has(key)) need.set(key, { partId: line.part_id, colour: x.colour, qty: 0, forItems: [] });
       const n = need.get(key)!; n.qty += qty; if (!n.forItems.includes(x.label)) n.forItems.push(x.label);

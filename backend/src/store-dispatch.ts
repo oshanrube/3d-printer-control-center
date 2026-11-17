@@ -14,7 +14,7 @@ import { db, kv } from './db.js';
 import type { Fleet } from './fleet.js';
 import type { LiveState, PrinterEvent } from './types.js';
 import { itemColour, syncStore } from './inventory.js';
-import { activeJob, plan } from './store-jobs.js';
+import { activeJob, plan, takeParts } from './store-jobs.js';
 import { addStock } from './store.js';
 import { deleteGcode, listGcodes, printState, startPrint, uploadGcode } from './printer-files.js';
 import type { StoreOption } from './store.js';
@@ -147,11 +147,15 @@ export async function assemble(report: Report): Promise<number> {
   for (const it of items) {
     const recipe = recipes.filter(r => r.product_id === it.product_id && r.combination_id === it.combination_id);
     if (!recipe.length) continue;
-    const colour = itemColour(JSON.parse(it.options_json || '[]') as StoreOption[], it.default_colour, it.product_id) ?? '';
+    const colour = itemColour(JSON.parse(it.options_json || '[]') as StoreOption[], it.default_colour, it.product_id);
     let qty = it.store_qty;
-    while (qty < it.min_qty && recipe.every(r => (stock.get(`${r.part_id}|${colour}`) ?? 0) >= r.qty)) {
-      for (const r of recipe) stock.set(`${r.part_id}|${colour}`, (stock.get(`${r.part_id}|${colour}`) ?? 0) - r.qty);
-      const parts = recipe.map(r => `${r.qty}× ${partName(r.part_id)}${colour ? ` ${colour}` : ''}`).join(', ');
+    while (qty < it.min_qty) {
+      // Take a full set on a copy first: only commit it if every part is there.
+      const trial = new Map(stock);
+      const used = recipe.map(r => ({ r, ...takeParts(trial, r.part_id, colour, r.qty) }));
+      if (used.some(u => u.taken < u.r.qty)) break;
+      for (const [k, v] of trial) stock.set(k, v);
+      const parts = used.map(u => u.from.map(([c, n]) => `${n}× ${partName(u.r.part_id)}${c ? ` ${c}` : ''}`).join(', ')).join(', ');
       if (!live) {
         db.prepare(`INSERT INTO store_updates (at, product_id, combination_id, reference, delta, before_qty, after_qty, dry_run, parts) VALUES (?, ?, ?, ?, 1, ?, ?, 1, ?)`)
           .run(Date.now(), it.product_id, it.combination_id, it.reference, qty, qty + 1, parts);
@@ -160,7 +164,7 @@ export async function assemble(report: Report): Promise<number> {
       try {
         const { before, after } = await addStock(it.product_id, it.combination_id, 1);
         db.transaction(() => {
-          for (const r of recipe) db.prepare('UPDATE part_stock SET qty = qty - ? WHERE part_id = ? AND colour = ?').run(r.qty, r.part_id, colour);
+          for (const u of used) for (const [c, n] of u.from) db.prepare('UPDATE part_stock SET qty = qty - ? WHERE part_id = ? AND colour = ?').run(n, u.r.part_id, c);
           db.prepare('UPDATE store_items SET store_qty = ? WHERE product_id = ? AND combination_id = ?').run(after, it.product_id, it.combination_id);
           db.prepare(`INSERT INTO store_updates (at, product_id, combination_id, reference, delta, before_qty, after_qty, dry_run, parts) VALUES (?, ?, ?, ?, 1, ?, ?, 0, ?)`)
             .run(Date.now(), it.product_id, it.combination_id, it.reference, before, after, parts);
