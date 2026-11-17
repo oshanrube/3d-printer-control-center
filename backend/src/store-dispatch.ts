@@ -45,30 +45,46 @@ const describe = (j: any) => `${partName(j.part_id)} (${j.units} unit${j.units =
 // Loading
 
 let dispatching: Promise<void> | null = null;
+let dispatchStarted = 0;
+const DISPATCH_STUCK_MS = 15 * 60_000;   // longer than any upload: the lock is released and logged
 
 /** Load planned plates onto ready printers (only with auto-load on). One run at a time. */
 export function dispatch(fleet: Fleet, report: Report, reason: string): Promise<void> {
-  if (!autoLoad() || dispatching) return dispatching ?? Promise.resolve();
-  dispatching = (async () => {
+  if (!autoLoad()) return Promise.resolve();
+  if (dispatching && Date.now() - dispatchStarted > DISPATCH_STUCK_MS) {
+    console.warn(`[store] dispatch run from ${new Date(dispatchStarted).toISOString()} never finished: releasing it`);
+    dispatching = null;
+  }
+  if (dispatching) return dispatching;
+  const started = dispatchStarted = Date.now();
+  const run: Promise<void> = (async () => {
+    // Yield first. Without it, a run with nothing to load finished synchronously, cleared the
+    // lock before it was set, and the finished promise stayed as the lock: every later dispatch
+    // (timer, printer free, Load now) did nothing until a restart (Luffy, 2026-11-17).
+    await null;
     try {
       const p = plan(fleet);
+      const assigned = p.jobs.filter(j => j.printer && j.file);
+      console.log(`[store] dispatch (${reason}): ${assigned.length ? assigned.map(j => `${j.part} -> ${j.printer!.name}`).join(', ') : 'no plate has a ready printer'}`);
       for (const job of p.jobs) {
         if (!job.printer || !job.file) continue;
         await loadOne(fleet, report, job, reason).catch(e => console.warn(`[store] loading failed: ${e?.message || e}`));
       }
-    } finally { dispatching = null; }
+    } finally { if (dispatchStarted === started) dispatching = null; }
   })();
-  return dispatching;
+  dispatching = run;
+  return run;
 }
 
 async function loadOne(fleet: Fleet, report: Report, job: ReturnType<typeof plan>['jobs'][number], reason: string) {
   const printer = fleet.client(job.printer!.id)?.printer;
-  if (!printer || activeJob(printer.id)) return;
+  if (!printer) return console.log(`[store] skip: printer ${job.printer!.id} unknown`);
+  if (activeJob(printer.id)) return console.log(`[store] skip ${printer.name}: already has job ${activeJob(printer.id).id}`);
   const file = db.prepare('SELECT * FROM part_files WHERE id = ?').get(job.file!.id) as any;
-  if (!file) return;
+  if (!file) return console.log(`[store] skip ${printer.name}: file ${job.file!.id} gone`);
   // Ask the printer itself, not the cache: never touch a printer that's busy.
   const state = await printState(printer);
-  if (!IDLE.includes(state)) return;
+  if (!IDLE.includes(state)) return console.log(`[store] skip ${printer.name}: printer says ${state}`);
   const name = basename(file.filename).replace(/[^\w.() -]/g, '_');
   const info = db.prepare(`INSERT INTO store_jobs (part_id, file_id, colour, units, printer_id, printer_file, status, for_items, created_at)
     VALUES (?, ?, ?, ?, ?, ?, 'loading', ?, ?)`).run(job.partId, file.id, job.colour ?? '', job.unitsPerPlate, printer.id, name,
