@@ -30,9 +30,10 @@ const KNOWN: Record<number, string> = {
   // master-server.log: "ai detect discover foreign objects" (pre-print foreign-object check, confidence >= 62.5%)
   104: 'AI camera found a foreign object on the bed during the pre-print check. Remove it (or check the plate edge) and restart',
   521: 'AI camera detected objects on the bed before printing. Clear the build plate and restart',
-  // Not confirmed (Luffy's Creality logs are unreachable): seen on Luffy 25-30 min into prints (2026-11-10/14/16),
-  // the print carries on and the code clears when it ends. The K1C runs its AI spaghetti ("pasta") check during prints.
-  509: 'AI camera warning during printing (probably the spaghetti / print-quality check)',
+  // Confirmed from Luffy's master-server.log (firmware 2.3.5.34, 2026-11-17): "current cavity temp = 61",
+  // "The chamber temperature is too high, turn off the camera", error = 500, code = 509, then
+  // `/usr/bin/chamber_cam_power.sh off`. Repeats every second while the chamber stays that hot.
+  509: 'Chamber too hot for the camera (about 61°C): the printer switched its camera off to protect it. The print carries on, but camera checks are blind until it cools',
 };
 
 export function describeFault(f: CrealityFault): string {
