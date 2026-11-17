@@ -85,7 +85,8 @@ function Camera({ printer }: { printer: Printer }) {
     return () => { alive.current = false; window.clearTimeout(timer.current); };
   }, [active, printer.id, printer.cameraType]);
 
-  if (!active || printer.cameraType === 'none') return null;
+  if (!active || printer.cameraType === 'none')
+    return <div class="cam cam-empty"><div class="noimg">{printer.cameraType === 'none' ? 'No camera' : 'Camera offline'}</div></div>;
   return (
     <div class="cam" onClick={() => setZoom(true)} title="Open full screen">
       {zoom && <CameraViewer printer={printer} onClose={() => setZoom(false)} />}
@@ -146,6 +147,7 @@ function PrinterCard({ printer, onEdit, toLabel, onLabelled, onLater, job, store
         </div>
         <div class="bar"><div class="fill" style={{ width: `${s ? progressShown * 100 : 0}%` }} /></div>
       </div>
+      <Camera printer={printer} />
       <div class="stats">
         <div class="stat"><div class="k">🛏️ Bed</div><div class="v">{s ? `${s.bedTemp}° / ${s.bedTarget}°` : '—'}</div></div>
         <div class="stat"><div class="k">🔥 Nozzle</div><div class="v">{s ? `${s.extruderTemp}° / ${s.extruderTarget}°` : '—'}</div></div>
@@ -158,7 +160,7 @@ function PrinterCard({ printer, onEdit, toLabel, onLabelled, onLater, job, store
       {(s?.fault || (st === 'error' && s?.errorText)) && (
         <div class="fault-banner" title={s!.fault?.message || undefined}>
           ⚠️ {s!.fault ? <b>Error {s!.fault.code}</b> : <b>Printer error</b>}: {s!.fault?.description || s!.errorText}
-          {(s!.bedTarget > 0 || s!.extruderTarget > 0) && <div class="fault-heat">🔥 Heaters still on</div>}
+          {(s!.bedTarget > 0 || s!.extruderTarget > 0) && st !== 'printing' && st !== 'paused' && st !== 'preparing' && <div class="fault-heat">🔥 Heaters still on</div>}
         </div>
       )}
       {s?.filamentDetected === false && <div class="muted" style="margin-top:8px;color:var(--st-offline)">🧵 Filament runout detected</div>}
@@ -191,7 +193,6 @@ function PrinterCard({ printer, onEdit, toLabel, onLabelled, onLater, job, store
         </div>
       )}
       {s?.markedOk && active && <div class="muted fine-line">👍 You marked this print as fine: reference and jam checks are off, and the AI won't pause it.</div>}
-      <Camera printer={printer} />
       {showRef && s?.reference && (
         <div class="ref-view">
           <div class="muted">Successful run {s.reference.samePrinter ? '(this printer)' : `on ${s.reference.refPrinterName}`} at {s.reference.refProgress}% (this print was at {s.reference.progress}% when compared):</div>

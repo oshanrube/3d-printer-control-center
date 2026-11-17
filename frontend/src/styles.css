@@ -266,3 +266,4 @@ nav.pages a { text-decoration: none; }
 .job-now { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .q-row.job-printed, .job-now.job-printed { border-color: color-mix(in srgb, var(--st-ready) 60%, var(--border)); }
 .q-row.job-failed { border-color: color-mix(in srgb, var(--st-offline) 60%, var(--border)); }
+.cam.cam-empty { cursor: default; }
