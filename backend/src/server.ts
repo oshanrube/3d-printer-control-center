@@ -6,6 +6,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { WebSocket } from 'ws';
 import { config } from './config.js';
+import { registerInventory } from './inventory.js';
 import { printersRepo, eventsRepo, printsRepo, aiRepo } from './db.js';
 import type { AiAnalyzer } from './ai-analyzer.js';
 import type { RefComparer } from './ref-compare.js';
@@ -27,6 +28,7 @@ export function buildServer(fleet: Fleet, ai: { current?: AiAnalyzer } = {}, ref
   engine: { current?: Engine } = {}) {
   const app = Fastify({ logger: false });
   app.register(fastifyWebsocket);
+  registerInventory(app, fleet);   // store sync, parts, recipes, G-code library
 
   const clients = new Set<WebSocket>();
   const send = (sock: WebSocket, obj: any) => { try { sock.send(JSON.stringify(obj)); } catch { /* ignore */ } };
