@@ -14,7 +14,7 @@
 }
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:var(--font);color:var(--text);background:var(--bg);min-height:100vh;line-height:1.45;-webkit-font-smoothing:antialiased}
-.app{max-width:1600px;margin:0 auto;padding:16px;padding-bottom:40px}
+.app{margin:0 auto;padding:16px;padding-bottom:40px}
 
 /* Topbar */
 .topbar{display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:14px 18px;background:color-mix(in srgb,var(--surface) 85%,transparent);
@@ -260,4 +260,3 @@ nav.pages { display: inline-flex; gap: 6px; }
 nav.pages a { text-decoration: none; }
 .inv-page { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px 24px; width: 100%; box-sizing: border-box; }
 @media (max-width: 640px) { .inv-page { padding: 14px 12px; border-radius: 10px; } }
-.app.wide { max-width: none; }
