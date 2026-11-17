@@ -181,20 +181,19 @@ function RecipeEditor({ item, parts, onSaved }: { item: StoreItem; parts: Part[]
 
 function PartsTab({ parts, models, onPart, reload, stock, colours }: { parts: Part[]; models: PrinterModel[]; onPart: (p: Part) => void; reload: () => void;
   stock: { partId: number; colour: string; qty: number }[]; colours: string[] }) {
-  const [name, setName] = useState(''); const [units, setUnits] = useState('1'); const [material, setMaterial] = useState('');
-  const create = () => api.addPart({ name: name.trim(), unitsPerPlate: Number(units) || 1, material: material.trim() })
-    .then(() => { setName(''); setUnits('1'); setMaterial(''); reload(); }).catch(fail('Adding the part'));
+  const [name, setName] = useState(''); const [material, setMaterial] = useState('');
+  const create = () => api.addPart({ name: name.trim(), material: material.trim() })
+    .then(() => { setName(''); setMaterial(''); reload(); }).catch(fail('Adding the part'));
   const sorted = useMemo(() => [...parts].sort((a, b) => a.name.localeCompare(b.name)), [parts]);
   return (
     <>
-      <p class="muted" style="margin-bottom:10px">A printed part is one plate's worth of G-code. Upload a file for each printer model it should print on: files sliced for another model are flagged.</p>
+      <p class="muted" style="margin-bottom:10px">A printed part can have several G-code files per printer model, each with its own number of units per plate (a 1-up and a 3-up layout, or a bigger K2 plate). For each plate the controller uses the biggest layout that doesn't overshoot what's needed. Files sliced for another model are flagged.</p>
       <div class="inv-newpart row">
         <input placeholder="New part name (e.g. Antler holder V3)" value={name} onInput={(e: any) => setName(e.currentTarget.value)} />
-        <label class="muted">per plate <input type="number" min={1} class="inv-num" value={units} onInput={(e: any) => setUnits(e.currentTarget.value)} /></label>
         <input class="inv-mat" placeholder="Material (ABS…)" value={material} onInput={(e: any) => setMaterial(e.currentTarget.value)} />
         <button class="btn btn-sm btn-primary" disabled={!name.trim()} onClick={create}>Add part</button>
       </div>
-      {!sorted.length && <p class="inv-hint">No parts yet. Add one above: each part then gets an <b>Upload</b> button for each printer model (K2 Plus, K1, K1C).</p>}
+      {!sorted.length && <p class="inv-hint">No parts yet. Add one above: each part then gets an <b>Add file</b> button for each printer model (K2 Plus, K1, K1C).</p>}
       {sorted.map(p => <PartCard part={p} models={models} onPart={onPart} reload={reload} stock={stock.filter(x => x.partId === p.id)} colours={colours} />)}
     </>
   );
@@ -204,23 +203,22 @@ function PartCard({ part: p, models, onPart, reload, stock, colours }: { part: P
   stock: { colour: string; qty: number }[]; colours: string[] }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [editStock, setEditStock] = useState(false);
+  const [newUnits, setNewUnits] = useState<Record<string, string>>({});
   const onHand = stock.filter(x => x.qty > 0).map(x => `${x.qty} ${x.colour || 'any colour'}`).join(', ');
   const save = (patch: any) => api.updatePart(p.id, patch).then(onPart).catch(fail('Saving'));
-  const upload = (model: string, file?: File) => {
-    if (!file) return;
-    setBusy(model);
-    api.uploadGcode(p.id, model, file).then(u => {
-      onPart(u);
-      const w = u.gcodes.find(g => g.model === model)?.meta.warnings || [];
-      if (w.length) alert(`Uploaded, but check this:\n\n${w.join('\n')}`);
-    }).catch(fail('Upload')).finally(() => setBusy(null));
+  const warnAfter = (u: Part, fileId?: number) => {
+    const f = fileId ? u.files.find(x => x.id === fileId) : [...u.files].sort((a, b) => b.id - a.id)[0];
+    if (f?.meta.warnings.length) alert(`Uploaded, but check this:\n\n${f.meta.warnings.join('\n')}`);
   };
-  const slots = [...models.map(m => m.model), ...p.gcodes.map(g => g.model).filter(m => !models.some(x => x.model === m))];
+  const run = (key: string, p2: Promise<Part>, fileId?: number) => {
+    setBusy(key);
+    p2.then(u => { onPart(u); warnAfter(u, fileId); }).catch(fail('Upload')).finally(() => setBusy(null));
+  };
+  const slots = [...models.map(m => m.model), ...p.files.map(g => g.model).filter(m => !models.some(x => x.model === m))];
   return (
     <div class="inv-part">
       <div class="row">
         <input class="inv-pname" value={p.name} onBlur={(e: any) => e.currentTarget.value.trim() !== p.name && save({ name: e.currentTarget.value.trim() })} />
-        <label class="muted">per plate <input type="number" min={1} class="inv-num" value={p.unitsPerPlate} onBlur={(e: any) => Number(e.currentTarget.value) !== p.unitsPerPlate && save({ unitsPerPlate: Number(e.currentTarget.value) })} /></label>
         <input class="inv-mat" placeholder="Material" value={p.material} onBlur={(e: any) => e.currentTarget.value.trim() !== p.material && save({ material: e.currentTarget.value.trim() })} />
         <span class="muted" title="Printed and checked, not yet used in a store item">on hand: {onHand || 'none'}</span>
         <button class="chip" onClick={() => setEditStock(!editStock)}>{editStock ? 'Done' : 'Edit'}</button>
@@ -238,22 +236,35 @@ function PartCard({ part: p, models, onPart, reload, stock, colours }: { part: P
         </div>
       )}
       {slots.map(model => {
-        const g = p.gcodes.find(x => x.model === model);
         const m = models.find(x => x.model === model);
+        const files = p.files.filter(f => f.model === model);
+        const units = newUnits[model] ?? '1';
         return (
-          <div class="inv-slot">
-            <b title={m ? m.printers.join(', ') : 'No printer of this model right now'}>{m?.name || g?.modelName || model}</b>
-            {g ? (
-              <span class={g.meta.warnings.length ? 'inv-warn' : ''} title={g.meta.warnings.join('\n')}>
-                {g.meta.warnings.length ? '⚠️ ' : '✅ '}{g.filename} · {kb(g.size)}{g.meta.printTime ? ` · ${g.meta.printTime}` : ''}
-                {g.meta.filamentType ? ` · ${g.meta.filamentType}` : ''}{g.meta.printerModel ? ` · sliced for ${g.meta.printerModel}` : ''}
-              </span>
-            ) : <span class="muted">No file</span>}
-            <div class="spacer" />
-            <label class="chip">{busy === model ? 'Uploading…' : g ? 'Replace' : 'Upload'}
-              <input type="file" accept=".gcode,.g,.gco" hidden disabled={busy === model} onChange={(e: any) => { upload(model, e.currentTarget.files?.[0]); e.currentTarget.value = ''; }} />
-            </label>
-            {g && <button class="chip" onClick={() => confirm(`Remove the ${m?.name || model} file?`) && api.deleteGcode(p.id, model).then(onPart).catch(fail('Removing'))}>Remove</button>}
+          <div class="inv-model">
+            <b title={m ? m.printers.join(', ') : 'No printer of this model right now'}>{m?.name || files[0]?.modelName || model}</b>
+            {files.map(f => (
+              <div class="inv-slot">
+                <label class="muted"><input type="number" min={1} class="inv-num" value={f.unitsPerPlate}
+                  onBlur={(e: any) => Number(e.currentTarget.value) !== f.unitsPerPlate && api.setFileUnits(p.id, f.id, Number(e.currentTarget.value)).then(onPart).catch(fail('Saving'))} /> per plate</label>
+                <span class={f.meta.warnings.length ? 'inv-warn' : ''} title={f.meta.warnings.join('\n')}>
+                  {f.meta.warnings.length ? '⚠️ ' : '✅ '}{f.filename} · {kb(f.size)}{f.meta.printTime ? ` · ${f.meta.printTime}` : ''}
+                  {f.meta.filamentType ? ` · ${f.meta.filamentType}` : ''}{f.meta.printerModel ? ` · sliced for ${f.meta.printerModel}` : ''}
+                </span>
+                <div class="spacer" />
+                <label class="chip">{busy === `r${f.id}` ? 'Uploading…' : 'Replace'}
+                  <input type="file" accept=".gcode,.g,.gco" hidden onChange={(e: any) => { const fl = e.currentTarget.files?.[0]; e.currentTarget.value = ''; if (fl) run(`r${f.id}`, api.replaceFile(p.id, f.id, fl), f.id); }} />
+                </label>
+                <button class="chip" onClick={() => confirm(`Remove ${f.filename}?`) && api.deleteFile(p.id, f.id).then(onPart).catch(fail('Removing'))}>Remove</button>
+              </div>
+            ))}
+            <div class="inv-slot inv-add">
+              {!files.length && <span class="muted">No file yet.</span>}
+              <div class="spacer" />
+              <label class="muted"><input type="number" min={1} class="inv-num" value={units} onInput={(e: any) => setNewUnits({ ...newUnits, [model]: e.currentTarget.value })} /> per plate</label>
+              <label class="chip">{busy === `a${model}` ? 'Uploading…' : '＋ Add file'}
+                <input type="file" accept=".gcode,.g,.gco" hidden onChange={(e: any) => { const fl = e.currentTarget.files?.[0]; e.currentTarget.value = ''; if (fl) run(`a${model}`, api.addFile(p.id, model, Math.max(1, Number(units) || 1), fl)); }} />
+              </label>
+            </div>
           </div>
         );
       })}
@@ -289,7 +300,7 @@ function QueueTab() {
       {plan.jobs.map(j => (
         <div class={`q-row ${j.printer ? 'q-go' : ''}`}>
           <b>{j.part}</b>
-          <span class="muted">{[j.material, j.colour].filter(Boolean).join(' ')} · {j.unitsPerPlate} per plate · for {j.forItems.join(', ')}</span>
+          <span class="muted">{[j.material, j.colour].filter(Boolean).join(' ')} · {j.unitsPerPlate} unit{j.unitsPerPlate === 1 ? '' : 's'}{j.file ? ` (${j.file.filename})` : ''} · for {j.forItems.join(', ')}</span>
           <span>{j.printer ? `→ would load on ${j.printer.name}` : <span class="inv-warn">{j.reason}</span>}</span>
         </div>
       ))}

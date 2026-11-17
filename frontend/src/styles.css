@@ -247,3 +247,10 @@ main{margin-top:16px}
 .q-colour { display: inline-flex; align-items: center; gap: 6px; font-size: .88rem; }
 .q-colour input { width: 34px; height: 28px; padding: 0; border: none; background: none; cursor: pointer; }
 .inv-hint { padding: 12px; border: 1px dashed var(--border); border-radius: 10px; font-size: .9rem; }
+.inv-model { border-top: 1px dashed var(--border); padding-top: 6px; display: flex; flex-direction: column; gap: 2px; }
+.inv-model > b { font-size: .85rem; }
+.inv-model .inv-slot { border-top: none; padding: 2px 0 2px 12px; }
+
+.inv-model .inv-slot > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.inv-model .inv-slot { flex-wrap: nowrap; }
+@media (max-width: 640px) { .inv-model .inv-slot { flex-wrap: wrap; } .inv-model .inv-slot > span { white-space: normal; } }

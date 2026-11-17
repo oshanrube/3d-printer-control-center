@@ -30,10 +30,23 @@ async function get(resource: string, display: string): Promise<any[]> {
   if (!config.store.apiKey) throw new Error('STORE_API_KEY is not set');
   // display holds [ , ] which must reach PrestaShop literally.
   const url = `${config.store.url}/api/${resource}?output_format=JSON&display=${display}&limit=1000`;
-  const res = await fetch(url, {
-    headers: { Authorization: `Basic ${Buffer.from(`${config.store.apiKey}:`).toString('base64')}` },
-    signal: AbortSignal.timeout(60_000),
-  });
+  // Network failures are retried: the Pi's DNS lookups intermittently time out (2026-11-17).
+  let res: Response | undefined;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      res = await fetch(url, {
+        headers: { Authorization: `Basic ${Buffer.from(`${config.store.apiKey}:`).toString('base64')}` },
+        signal: AbortSignal.timeout(60_000),
+      });
+      break;
+    } catch (e: any) {
+      if (attempt >= 2) {
+        const cause = e?.cause?.code || e?.cause?.message || '';
+        throw new Error(`can't reach the store (${resource})${cause ? `: ${/EAI_AGAIN|ENOTFOUND/.test(cause) ? `DNS lookup failed (${cause})` : cause}` : `: ${e?.message || e}`}`);
+      }
+      await new Promise(r => setTimeout(r, attempt ? 8000 : 3000));
+    }
+  }
   if (!res.ok) throw new Error(`store ${resource}: HTTP ${res.status}`);
   const body: any = await res.json().catch(() => null);
   // An empty result comes back as [] instead of {resource: [...]}.

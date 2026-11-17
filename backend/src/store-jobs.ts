@@ -112,18 +112,28 @@ function readiness(fleet: Fleet, s: LiveState, colours: Record<string, string>):
 
 export interface PlannedJob {
   partId: number; part: string; colour: string | null; material: string; unitsPerPlate: number;
+  file: { id: number; filename: string; model: string } | null;   // the G-code this plate would use
   forItems: string[]; printer: { id: number; name: string } | null; reason: string | null;
+}
+
+interface PartFile { id: number; model: string; units: number; filename: string }
+/** The file for a plate: the biggest layout that doesn't overshoot what's still needed, else the smallest. */
+function bestFile(files: PartFile[], remaining: number): PartFile | null {
+  if (!files.length) return null;
+  const fit = files.filter(f => f.units <= remaining).sort((a, b) => b.units - a.units)[0];
+  return fit ?? [...files].sort((a, b) => a.units - b.units)[0];
 }
 
 export function plan(fleet: Fleet) {
   const colours = colourMap();
   const printers = fleet.getStates().map(s => readiness(fleet, s, colours));
   const parts = new Map((db.prepare('SELECT * FROM parts').all() as any[]).map(p => [p.id, p]));
-  const gcodeModels = new Map<number, Set<string>>();
-  for (const g of db.prepare('SELECT part_id, model FROM part_gcodes').all() as any[]) {
-    if (!gcodeModels.has(g.part_id)) gcodeModels.set(g.part_id, new Set());
-    gcodeModels.get(g.part_id)!.add(g.model);
+  const filesOf = new Map<number, PartFile[]>();
+  for (const f of db.prepare('SELECT id, part_id, model, units_per_plate, filename FROM part_files').all() as any[]) {
+    if (!filesOf.has(f.part_id)) filesOf.set(f.part_id, []);
+    filesOf.get(f.part_id)!.push({ id: f.id, model: f.model, units: Math.max(1, f.units_per_plate), filename: f.filename });
   }
+  const gcodeModels = new Map<number, Set<string>>([...filesOf].map(([id, fs]) => [id, new Set(fs.map(f => f.model))]));
   const onHand = new Map<string, number>();
   for (const r of db.prepare('SELECT * FROM part_stock').all() as any[]) onHand.set(`${r.part_id}|${r.colour}`, r.qty);
   const recipes = db.prepare('SELECT * FROM recipes').all() as any[];
@@ -163,8 +173,9 @@ export function plan(fleet: Fleet) {
   const jobs: PlannedJob[] = [];
   for (const n of need.values()) {
     const part = parts.get(n.partId)!;
-    const plates = Math.ceil(n.qty / Math.max(1, part.units_per_plate));
-    for (let i = 0; i < plates; i++) {
+    const files = filesOf.get(n.partId) ?? [];
+    let remaining = n.qty;
+    while (remaining > 0) {
       const wantHex = n.colour ? colours[n.colour] : undefined;
       const fits = (p: PrinterReadiness) => {
         if (!p.model || !gcodeModels.get(n.partId)?.has(p.model)) return 'no G-code for its model';
@@ -186,7 +197,12 @@ export function plan(fleet: Fleet) {
           ? `Waiting for ${withFilament.map(p => `${p.name} (${p.why || 'taken by another job'})`).join(', ')}`
           : `No ${compatible.map(p => p.modelName).filter((v, k, a) => a.indexOf(v) === k).join('/')} printer has ${[part.material, n.colour].filter(Boolean).join(' ') || 'the filament'} loaded`;
       }
-      jobs.push({ partId: n.partId, part: part.name, colour: n.colour, material: part.material, unitsPerPlate: part.units_per_plate,
+      // The printer's model decides which files can be used; without a printer, plan with any file.
+      const file = bestFile(pick ? files.filter(f => f.model === pick.model) : files, remaining);
+      const units = file?.units ?? remaining;   // no file at all: one line for the whole amount
+      remaining -= units;
+      jobs.push({ partId: n.partId, part: part.name, colour: n.colour, material: part.material, unitsPerPlate: units,
+        file: file ? { id: file.id, filename: file.filename, model: file.model } : null,
         forItems: n.forItems, printer: pick ? { id: pick.id, name: pick.name } : null, reason });
     }
   }

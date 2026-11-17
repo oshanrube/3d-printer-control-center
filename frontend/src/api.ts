@@ -33,11 +33,11 @@ export interface StoreItem {
   syncedAt: number | null; recipe: { partId: number; qty: number }[];
 }
 export interface SyncStatus { lastSyncAt: number | null; lastAttemptAt: number | null; lastError: string | null; items: number; reason: string | null; running: boolean }
-export interface PartGcode {
-  model: string; modelName: string; filename: string; size: number; uploadedAt: number;
+export interface PartFile {
+  id: number; unitsPerPlate: number; model: string; modelName: string; filename: string; size: number; uploadedAt: number;
   meta: { printerModel?: string; filamentType?: string; filamentColour?: string; printTime?: string; warnings: string[] };
 }
-export interface Part { id: number; name: string; unitsPerPlate: number; material: string; onHand: number; notes: string; gcodes: PartGcode[] }
+export interface Part { id: number; name: string; material: string; notes: string; files: PartFile[] }
 export interface Spool { slot: string; material: string; colour: string; name: string; colourName: string | null }
 export interface PrinterReadiness {
   id: number; name: string; model: string | null; modelName: string | null; state: string; online: boolean;
@@ -46,7 +46,7 @@ export interface PrinterReadiness {
 }
 export interface PlannedJob {
   partId: number; part: string; colour: string | null; material: string; unitsPerPlate: number;
-  forItems: string[]; printer: { id: number; name: string } | null; reason: string | null;
+  file: { id: number; filename: string; model: string } | null; forItems: string[]; printer: { id: number; name: string } | null; reason: string | null;
 }
 export interface Plan {
   computedAt: number; dryRun: boolean; printers: PrinterReadiness[]; jobs: PlannedJob[];
@@ -118,14 +118,19 @@ export const api = {
     j<StoreItem>(`/api/store/items/${i.productId}/${i.combinationId}/recipe`, { method: 'PUT', body: JSON.stringify({ parts }) }),
   models: () => j<PrinterModel[]>('/api/store/models'),
   parts: () => j<Part[]>('/api/parts'),
-  addPart: (p: { name: string; unitsPerPlate: number; material: string }) => j<Part>('/api/parts', { method: 'POST', body: JSON.stringify(p) }),
-  updatePart: (id: number, patch: Partial<Pick<Part, 'name' | 'unitsPerPlate' | 'material' | 'onHand' | 'notes'>>) =>
+  addPart: (p: { name: string; material: string }) => j<Part>('/api/parts', { method: 'POST', body: JSON.stringify(p) }),
+  updatePart: (id: number, patch: Partial<Pick<Part, 'name' | 'material' | 'notes'>>) =>
     j<Part>(`/api/parts/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
   deletePart: (id: number) => j(`/api/parts/${id}`, { method: 'DELETE' }),
-  uploadGcode: (id: number, model: string, file: File) =>
-    j<Part>(`/api/parts/${id}/gcode/${model}`, { method: 'PUT', body: file,
+  addFile: (id: number, model: string, units: number, file: File) =>
+    j<Part>(`/api/parts/${id}/files?model=${encodeURIComponent(model)}&units=${units}`, { method: 'POST', body: file,
       headers: { 'Content-Type': 'application/octet-stream', 'X-Filename': encodeURIComponent(file.name) } }),
-  deleteGcode: (id: number, model: string) => j<Part>(`/api/parts/${id}/gcode/${model}`, { method: 'DELETE' }),
+  replaceFile: (id: number, fileId: number, file: File) =>
+    j<Part>(`/api/parts/${id}/files/${fileId}`, { method: 'PUT', body: file,
+      headers: { 'Content-Type': 'application/octet-stream', 'X-Filename': encodeURIComponent(file.name) } }),
+  setFileUnits: (id: number, fileId: number, unitsPerPlate: number) =>
+    j<Part>(`/api/parts/${id}/files/${fileId}`, { method: 'PATCH', body: JSON.stringify({ unitsPerPlate }) }),
+  deleteFile: (id: number, fileId: number) => j<Part>(`/api/parts/${id}/files/${fileId}`, { method: 'DELETE' }),
   plan: () => j<Plan>('/api/store/plan'),
   printerJobs: (id: number, patch: { available?: boolean; manualMaterial?: string; manualColour?: string }) =>
     j<PrinterReadiness>(`/api/store/printers/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),

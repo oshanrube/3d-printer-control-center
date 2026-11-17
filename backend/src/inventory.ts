@@ -30,11 +30,23 @@ CREATE TABLE IF NOT EXISTS part_gcodes (
   size INTEGER NOT NULL, uploaded_at INTEGER NOT NULL, meta_json TEXT NOT NULL DEFAULT '{}',
   PRIMARY KEY (part_id, model)
 );
+CREATE TABLE IF NOT EXISTS part_files (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, part_id INTEGER NOT NULL, model TEXT NOT NULL,
+  units_per_plate INTEGER NOT NULL DEFAULT 1,            -- per file: a K2 plate or a 3-up layout holds more
+  filename TEXT NOT NULL, path TEXT NOT NULL, size INTEGER NOT NULL, uploaded_at INTEGER NOT NULL,
+  meta_json TEXT NOT NULL DEFAULT '{}'
+);
 CREATE TABLE IF NOT EXISTS recipes (
   product_id INTEGER NOT NULL, combination_id INTEGER NOT NULL, part_id INTEGER NOT NULL, qty INTEGER NOT NULL,
   PRIMARY KEY (product_id, combination_id, part_id)
 );
 `);
+
+// Units per plate used to be per part with one file per (part, model): move those files over once.
+db.exec(`INSERT INTO part_files (part_id, model, units_per_plate, filename, path, size, uploaded_at, meta_json)
+  SELECT g.part_id, g.model, COALESCE(p.units_per_plate, 1), g.filename, g.path, g.size, g.uploaded_at, g.meta_json
+  FROM part_gcodes g LEFT JOIN parts p ON p.id = g.part_id`);
+db.exec(`DELETE FROM part_gcodes`);
 
 /** Creality's model code (from the :9999 feed) -> the name slicers write as `printer_model`. */
 export const MODEL_NAMES: Record<string, string> = { K1C: 'K1C', K1: 'K1', F008: 'K2 Plus', K1MAX: 'K1 Max' };
@@ -123,12 +135,12 @@ function itemsWithRecipes() {
 }
 
 function partsWithGcodes() {
-  const g = db.prepare('SELECT * FROM part_gcodes ORDER BY model').all() as any[];
+  const g = db.prepare('SELECT * FROM part_files ORDER BY model, units_per_plate DESC, id').all() as any[];
   return (db.prepare('SELECT * FROM parts ORDER BY name').all() as any[]).map(p => ({
-    id: p.id, name: p.name, unitsPerPlate: p.units_per_plate, material: p.material, onHand: p.on_hand,
+    id: p.id, name: p.name, material: p.material,
     notes: p.notes, createdAt: p.created_at,
-    gcodes: g.filter(x => x.part_id === p.id).map(x => ({
-      model: x.model, modelName: modelName(x.model), filename: x.filename, size: x.size,
+    files: g.filter(x => x.part_id === p.id).map(x => ({
+      id: x.id, unitsPerPlate: x.units_per_plate, model: x.model, modelName: modelName(x.model), filename: x.filename, size: x.size,
       uploadedAt: x.uploaded_at, meta: JSON.parse(x.meta_json || '{}'),
     })),
   }));
@@ -243,8 +255,8 @@ export function registerInventory(app: FastifyInstance, fleet: Fleet) {
     const b = (req.body || {}) as any; const name = String(b.name || '').trim();
     if (!name) return reply.code(400).send({ error: 'A part needs a name.' });
     if (db.prepare('SELECT 1 FROM parts WHERE name = ?').get(name)) return reply.code(409).send({ error: 'A part with that name exists.' });
-    const info = db.prepare('INSERT INTO parts (name, units_per_plate, material, notes, created_at) VALUES (?, ?, ?, ?, ?)')
-      .run(name, int(b.unitsPerPlate, 1, 1000) ?? 1, String(b.material || '').trim(), String(b.notes || ''), Date.now());
+    const info = db.prepare('INSERT INTO parts (name, material, notes, created_at) VALUES (?, ?, ?, ?)')
+      .run(name, String(b.material || '').trim(), String(b.notes || ''), Date.now());
     return partsWithGcodes().find(p => p.id === Number(info.lastInsertRowid));
   });
 
@@ -256,7 +268,6 @@ export function registerInventory(app: FastifyInstance, fleet: Fleet) {
       if (db.prepare('SELECT 1 FROM parts WHERE name = ? AND id != ?').get(name, id)) return reply.code(409).send({ error: 'A part with that name exists.' });
       db.prepare('UPDATE parts SET name = ? WHERE id = ?').run(name, id);
     }
-    if (b.unitsPerPlate !== undefined) db.prepare('UPDATE parts SET units_per_plate = ? WHERE id = ?').run(int(b.unitsPerPlate, 1, 1000) ?? 1, id);
     if (b.material !== undefined) db.prepare('UPDATE parts SET material = ? WHERE id = ?').run(String(b.material).trim(), id);
     if (b.notes !== undefined) db.prepare('UPDATE parts SET notes = ? WHERE id = ?').run(String(b.notes), id);
     if (b.onHand !== undefined) db.prepare('UPDATE parts SET on_hand = ? WHERE id = ?').run(int(b.onHand, 0, 100000) ?? 0, id);
@@ -267,43 +278,76 @@ export function registerInventory(app: FastifyInstance, fleet: Fleet) {
     const id = Number((req.params as any).id);
     const used = db.prepare('SELECT COUNT(*) n FROM recipes WHERE part_id = ?').get(id) as any;
     if (used.n) return reply.code(409).send({ error: `This part is in ${used.n} recipe(s): remove it from them first.` });
-    for (const g of db.prepare('SELECT path FROM part_gcodes WHERE part_id = ?').all(id) as any[]) {
+    for (const g of db.prepare('SELECT path FROM part_files WHERE part_id = ?').all(id) as any[]) {
       try { unlinkSync(join(config.dataDir, g.path)); } catch { /* already gone */ }
     }
     try { rmSync(join(LIBRARY, `part-${id}`), { recursive: true, force: true }); } catch { /* ignore */ }
-    db.prepare('DELETE FROM part_gcodes WHERE part_id = ?').run(id);
+    db.prepare('DELETE FROM part_files WHERE part_id = ?').run(id);
     db.prepare('DELETE FROM part_stock WHERE part_id = ?').run(id);
     db.prepare('DELETE FROM parts WHERE id = ?').run(id);
     return { ok: true };
   });
 
-  // Upload: PUT /api/parts/:id/gcode/:model, body = the file, header X-Filename = original name.
-  app.put('/api/parts/:id/gcode/:model', async (req, reply) => {
-    const id = Number((req.params as any).id); const model = safeModel(String((req.params as any).model));
-    if (!model) return reply.code(400).send({ error: 'Bad printer model.' });
-    if (!db.prepare('SELECT 1 FROM parts WHERE id = ?').get(id)) return reply.code(404).send({ error: 'Unknown part.' });
-    const body = req.body as Buffer;
-    if (!Buffer.isBuffer(body) || !body.length) return reply.code(400).send({ error: 'Send the G-code file as application/octet-stream.' });
-    const filename = decodeURIComponent(String(req.headers['x-filename'] || 'upload.gcode')).replace(/[\\/]/g, '_').slice(0, 200);
-    const rel = join('gcode-library', `part-${id}`, `${model}.gcode`);
-    mkdirSync(join(LIBRARY, `part-${id}`), { recursive: true });
+  // Files: several per part and model, each with its own units per plate.
+  // Upload: POST /api/parts/:id/files?model=K1C&units=3, body = the file, header X-Filename.
+  // Replace: PUT /api/parts/:id/files/:fileId (same units). Units: PATCH. Remove: DELETE.
+  const storeFile = (partId: number, model: string, body: Buffer, rel: string) => {
+    mkdirSync(join(LIBRARY, `part-${partId}`), { recursive: true });
     const tmp = join(config.dataDir, rel + '.uploading');
     writeFileSync(tmp, body);
     const meta = gcodeMeta(tmp, model);
     writeFileSync(join(config.dataDir, rel), readFileSync(tmp)); unlinkSync(tmp);
-    db.prepare(`INSERT INTO part_gcodes (part_id, model, filename, path, size, uploaded_at, meta_json) VALUES (?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT (part_id, model) DO UPDATE SET filename = excluded.filename, path = excluded.path, size = excluded.size,
-        uploaded_at = excluded.uploaded_at, meta_json = excluded.meta_json`)
-      .run(id, model, filename, rel, body.length, Date.now(), JSON.stringify(meta));
+    return meta;
+  };
+  const fileName = (req: any) => decodeURIComponent(String(req.headers['x-filename'] || 'upload.gcode')).replace(/[\\/]/g, '_').slice(0, 200);
+  const bodyOf = (req: any, reply: any) => {
+    const body = req.body as Buffer;
+    if (!Buffer.isBuffer(body) || !body.length) { reply.code(400).send({ error: 'Send the G-code file as application/octet-stream.' }); return null; }
+    return body;
+  };
+
+  app.post('/api/parts/:id/files', async (req, reply) => {
+    const id = Number((req.params as any).id); const q = req.query as any;
+    const model = safeModel(String(q.model || '')); const units = int(q.units ?? 1, 1, 1000);
+    if (!model) return reply.code(400).send({ error: 'Bad printer model.' });
+    if (!units) return reply.code(400).send({ error: 'Units per plate must be 1 or more.' });
+    if (!db.prepare('SELECT 1 FROM parts WHERE id = ?').get(id)) return reply.code(404).send({ error: 'Unknown part.' });
+    const body = bodyOf(req, reply); if (!body) return;
+    const info = db.prepare(`INSERT INTO part_files (part_id, model, units_per_plate, filename, path, size, uploaded_at)
+      VALUES (?, ?, ?, ?, '', ?, ?)`).run(id, model, units, fileName(req), body.length, Date.now());
+    const fid = Number(info.lastInsertRowid);
+    const rel = join('gcode-library', `part-${id}`, `${model}-${fid}.gcode`);
+    try {
+      const meta = storeFile(id, model, body, rel);
+      db.prepare('UPDATE part_files SET path = ?, meta_json = ? WHERE id = ?').run(rel, JSON.stringify(meta), fid);
+    } catch (e) { db.prepare('DELETE FROM part_files WHERE id = ?').run(fid); throw e; }
     return partsWithGcodes().find(p => p.id === id);
   });
 
-  app.delete('/api/parts/:id/gcode/:model', async (req, reply) => {
-    const id = Number((req.params as any).id); const model = safeModel(String((req.params as any).model));
-    const row = model && db.prepare('SELECT path FROM part_gcodes WHERE part_id = ? AND model = ?').get(id, model) as any;
-    if (!row) return reply.code(404).send({ error: 'No file for that model.' });
-    try { if (existsSync(join(config.dataDir, row.path))) unlinkSync(join(config.dataDir, row.path)); } catch { /* ignore */ }
-    db.prepare('DELETE FROM part_gcodes WHERE part_id = ? AND model = ?').run(id, model);
-    return partsWithGcodes().find(p => p.id === id);
+  const fileRow = (req: any) => db.prepare('SELECT * FROM part_files WHERE id = ? AND part_id = ?')
+    .get(Number(req.params.fileId), Number(req.params.id)) as any;
+
+  app.put('/api/parts/:id/files/:fileId', async (req, reply) => {
+    const f = fileRow(req); if (!f) return reply.code(404).send({ error: 'Unknown file.' });
+    const body = bodyOf(req, reply); if (!body) return;
+    const meta = storeFile(f.part_id, f.model, body, f.path);
+    db.prepare('UPDATE part_files SET filename = ?, size = ?, uploaded_at = ?, meta_json = ? WHERE id = ?')
+      .run(fileName(req), body.length, Date.now(), JSON.stringify(meta), f.id);
+    return partsWithGcodes().find(p => p.id === f.part_id);
+  });
+
+  app.patch('/api/parts/:id/files/:fileId', async (req, reply) => {
+    const f = fileRow(req); if (!f) return reply.code(404).send({ error: 'Unknown file.' });
+    const units = int((req.body as any)?.unitsPerPlate, 1, 1000);
+    if (!units) return reply.code(400).send({ error: 'Units per plate must be 1 or more.' });
+    db.prepare('UPDATE part_files SET units_per_plate = ? WHERE id = ?').run(units, f.id);
+    return partsWithGcodes().find(p => p.id === f.part_id);
+  });
+
+  app.delete('/api/parts/:id/files/:fileId', async (req, reply) => {
+    const f = fileRow(req); if (!f) return reply.code(404).send({ error: 'Unknown file.' });
+    try { if (existsSync(join(config.dataDir, f.path))) unlinkSync(join(config.dataDir, f.path)); } catch { /* ignore */ }
+    db.prepare('DELETE FROM part_files WHERE id = ?').run(f.id);
+    return partsWithGcodes().find(p => p.id === f.part_id);
   });
 }
