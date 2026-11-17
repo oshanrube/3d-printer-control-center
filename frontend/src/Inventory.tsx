@@ -11,6 +11,21 @@ const ago = (t: number | null) => {
 const kb = (n: number) => n > 1e6 ? `${(n / 1e6).toFixed(1)} MB` : `${Math.round(n / 1e3)} kB`;
 const fail = (what: string) => (e: any) => alert(`${what}: ${e?.message || e}`);
 
+/**
+ * An input that keeps what you type until you leave it (blur or Enter), then saves if it
+ * changed. The dashboard re-renders every second with live printer data; an input bound
+ * straight to the saved value was reset mid-typing, so edits were silently lost.
+ */
+function EditField({ value, onSave, type = 'text', ...rest }: { value: string | number; onSave: (v: string) => void; type?: string; [k: string]: any }) {
+  const [v, setV] = useState(String(value));
+  const [editing, setEditing] = useState(false);
+  useEffect(() => { if (!editing) setV(String(value)); }, [value, editing]);
+  const commit = () => { setEditing(false); if (v.trim() !== String(value)) onSave(v.trim()); };
+  return <input {...rest} type={type} value={v} onFocus={() => setEditing(true)}
+    onInput={(e: any) => { setEditing(true); setV(e.currentTarget.value); }} onBlur={commit}
+    onKeyDown={(e: any) => { if (e.key === 'Enter') e.currentTarget.blur(); if (e.key === 'Escape') { setV(String(value)); setEditing(false); } }} />;
+}
+
 export function InventoryModal({ onClose }: { onClose: () => void }) {
   const [tab, setTab] = useState<'items' | 'parts' | 'queue' | 'colours'>('items');
   const [items, setItems] = useState<StoreItem[] | null>(null);
@@ -90,7 +105,7 @@ function ItemsTab({ items, parts, onItem }: { items: StoreItem[] | null; parts: 
         const managed = all.filter(i => i.enabled).length;
         const isOpen = open.has(pid) || !!q;
         return (
-          <div class="inv-product">
+          <div class="inv-product" key={pid}>
             <div class="inv-prow" onClick={() => toggle(pid)}>
               <span>{isOpen ? '▾' : '▸'}</span>
               <b>{name}</b>
@@ -103,7 +118,7 @@ function ItemsTab({ items, parts, onItem }: { items: StoreItem[] | null; parts: 
                 </span>
               )}
             </div>
-            {isOpen && rows.map(i => <ItemRow item={i} parts={parts} onItem={onItem} />)}
+            {isOpen && rows.map(i => <ItemRow key={`${i.productId}-${i.combinationId}`} item={i} parts={parts} onItem={onItem} />)}
           </div>
         );
       })}
@@ -156,7 +171,7 @@ function RecipeEditor({ item, parts, onSaved }: { item: StoreItem; parts: Part[]
     <div class="inv-recipe">
       {!parts.length && <p class="muted">No printed parts yet: add them in the “Printed parts” tab first.</p>}
       {rows.map((r, k) => (
-        <div class="row">
+        <div class="row" key={r.partId}>
           <input type="number" min={1} class="inv-num" value={r.qty}
             onInput={(e: any) => setRows(rows.map((x, j) => j === k ? { ...x, qty: Number(e.currentTarget.value) } : x))} />
           <span>× {parts.find(p => p.id === r.partId)?.name}</span>
@@ -194,7 +209,7 @@ function PartsTab({ parts, models, onPart, reload, stock, colours }: { parts: Pa
         <button class="btn btn-sm btn-primary" disabled={!name.trim()} onClick={create}>Add part</button>
       </div>
       {!sorted.length && <p class="inv-hint">No parts yet. Add one above: each part then gets an <b>Add file</b> button for each printer model (K2 Plus, K1, K1C).</p>}
-      {sorted.map(p => <PartCard part={p} models={models} onPart={onPart} reload={reload} stock={stock.filter(x => x.partId === p.id)} colours={colours} />)}
+      {sorted.map(p => <PartCard key={p.id} part={p} models={models} onPart={onPart} reload={reload} stock={stock.filter(x => x.partId === p.id)} colours={colours} />)}
     </>
   );
 }
@@ -218,8 +233,8 @@ function PartCard({ part: p, models, onPart, reload, stock, colours }: { part: P
   return (
     <div class="inv-part">
       <div class="row">
-        <input class="inv-pname" value={p.name} onBlur={(e: any) => e.currentTarget.value.trim() !== p.name && save({ name: e.currentTarget.value.trim() })} />
-        <input class="inv-mat" placeholder="Material" value={p.material} onBlur={(e: any) => e.currentTarget.value.trim() !== p.material && save({ material: e.currentTarget.value.trim() })} />
+        <EditField class="inv-pname" value={p.name} onSave={v => v ? save({ name: v }) : alert('A part needs a name.')} />
+        <EditField class="inv-mat" placeholder="Material" value={p.material} onSave={v => save({ material: v })} />
         <span class="muted" title="Printed and checked, not yet used in a store item">on hand: {onHand || 'none'}</span>
         <button class="chip" onClick={() => setEditStock(!editStock)}>{editStock ? 'Done' : 'Edit'}</button>
         <div class="spacer" />
@@ -229,8 +244,8 @@ function PartCard({ part: p, models, onPart, reload, stock, colours }: { part: P
         <div class="inv-stock">
           {['', ...colours].map(c => (
             <label class="muted">{c || 'No colour'}{' '}
-              <input type="number" min={0} class="inv-num" value={stock.find(x => x.colour === c)?.qty ?? 0}
-                onBlur={(e: any) => api.setPartStock(p.id, c, Number(e.currentTarget.value)).then(reload).catch(fail('Saving'))} />
+              <EditField type="number" min={0} class="inv-num" value={stock.find(x => x.colour === c)?.qty ?? 0}
+                onSave={v => api.setPartStock(p.id, c, Number(v) || 0).then(reload).catch(fail('Saving'))} />
             </label>
           ))}
         </div>
@@ -240,12 +255,12 @@ function PartCard({ part: p, models, onPart, reload, stock, colours }: { part: P
         const files = p.files.filter(f => f.model === model);
         const units = newUnits[model] ?? '1';
         return (
-          <div class="inv-model">
+          <div class="inv-model" key={model}>
             <b title={m ? m.printers.join(', ') : 'No printer of this model right now'}>{m?.name || files[0]?.modelName || model}</b>
             {files.map(f => (
-              <div class="inv-slot">
-                <label class="muted"><input type="number" min={1} class="inv-num" value={f.unitsPerPlate}
-                  onBlur={(e: any) => Number(e.currentTarget.value) !== f.unitsPerPlate && api.setFileUnits(p.id, f.id, Number(e.currentTarget.value)).then(onPart).catch(fail('Saving'))} /> per plate</label>
+              <div class="inv-slot" key={f.id}>
+                <label class="muted"><EditField type="number" min={1} class="inv-num" value={f.unitsPerPlate}
+                  onSave={v => api.setFileUnits(p.id, f.id, Number(v)).then(onPart).catch(fail('Saving'))} /> per plate</label>
                 <span class={f.meta.warnings.length ? 'inv-warn' : ''} title={f.meta.warnings.join('\n')}>
                   {f.meta.warnings.length ? '⚠️ ' : '✅ '}{f.filename} · {kb(f.size)}{f.meta.printTime ? ` · ${f.meta.printTime}` : ''}
                   {f.meta.filamentType ? ` · ${f.meta.filamentType}` : ''}{f.meta.printerModel ? ` · sliced for ${f.meta.printerModel}` : ''}
