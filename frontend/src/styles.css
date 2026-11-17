@@ -258,5 +258,6 @@ main{margin-top:16px}
 /* Pages */
 nav.pages { display: inline-flex; gap: 6px; }
 nav.pages a { text-decoration: none; }
-.inv-page { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px 24px; max-width: 1200px; margin: 0 auto; }
+.inv-page { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px 24px; width: 100%; box-sizing: border-box; }
 @media (max-width: 640px) { .inv-page { padding: 14px 12px; border-radius: 10px; } }
+.app.wide { max-width: none; }

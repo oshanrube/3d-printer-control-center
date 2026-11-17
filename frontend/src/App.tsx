@@ -591,7 +591,7 @@ export function App() {
   const sorted = [...printers].sort((a, b) => order(a) - order(b));
 
   return (
-    <div class="app">
+    <div class={`app ${route.page === 'inventory' ? 'wide' : ''}`}>
       <div class="topbar">
         <div class="brand"><span class="logo">🖨️</span> Control Center</div>
         <span class={`conn ${connected ? 'on' : 'off'}`}>{connected ? 'live' : 'reconnecting…'}</span>
