@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { createPortal } from 'preact/compat';
 import { api, FAILURE_REASONS, type Printer, type PrinterEvent, type StoppedPrint } from './api';
+import { InventoryModal } from './Inventory';
 import { useStore } from './store';
 import { enablePush, pushStatus } from './push';
 
@@ -511,7 +512,7 @@ function Applier({ r, printers, onApply }: any) {
 /* ---------- app ---------- */
 export function App() {
   const { printers, events, connected, labelsVersion } = useStore();
-  const [modal, setModal] = useState<null | { kind: 'printer'; p: Printer | 'new' } | { kind: 'scan' } | { kind: 'labels' }>(null);
+  const [modal, setModal] = useState<null | { kind: 'printer'; p: Printer | 'new' } | { kind: 'scan' } | { kind: 'labels' } | { kind: 'inventory' }>(null);
   // Stopped prints still needing a failure reason (refreshed when one is labelled or a print stops).
   const [toLabel, setToLabel] = useState<StoppedPrint[]>([]);
   const [later, setLater] = useState<Set<number>>(new Set());
@@ -519,6 +520,12 @@ export function App() {
   useEffect(() => { loadLabels(); }, [labelsVersion]);
   useEffect(() => { const t = setInterval(loadLabels, 120_000); return () => clearInterval(t); }, []);
   const newestToLabel = (printerId: number) => toLabel.find(p => p.printerId === printerId && !later.has(p.id));
+  // Opening the dashboard asks for a store sync (the server does it at most every 5 min).
+  useEffect(() => {
+    const sync = () => { if (!document.hidden) api.storeSync('dashboard').catch(() => {}); };
+    sync(); document.addEventListener('visibilitychange', sync);
+    return () => document.removeEventListener('visibilitychange', sync);
+  }, []);
   const [push, setPush] = useState(pushStatus());
   const [theme, setTheme] = useState(document.documentElement.getAttribute('data-theme') || 'dark');
 
@@ -571,6 +578,7 @@ export function App() {
         {toLabel.length > 0 && (
           <button class="btn btn-ghost btn-sm" title="Failed prints that need a reason" onClick={() => setModal({ kind: 'labels' })}>🏷️ {toLabel.length}</button>
         )}
+        <button class="btn btn-ghost btn-sm" onClick={() => setModal({ kind: 'inventory' })} title="Store inventory">📦 Inventory</button>
         <button class="btn btn-ghost btn-sm" onClick={() => setModal({ kind: 'printer', p: 'new' })}>＋ Add</button>
         <button class="btn btn-ghost btn-sm" onClick={() => setModal({ kind: 'scan' })}>🔍 Scan</button>
         <button class="btn btn-ghost btn-sm" onClick={doPush} title="Notifications">
@@ -604,6 +612,7 @@ export function App() {
       {modal?.kind === 'printer' && <PrinterModal printer={modal.p} onClose={() => setModal(null)} />}
       {modal?.kind === 'scan' && <ScanModal printers={printers} onClose={() => setModal(null)} />}
       {modal?.kind === 'labels' && <LabelModal onClose={() => setModal(null)} onChanged={loadLabels} />}
+      {modal?.kind === 'inventory' && <InventoryModal onClose={() => setModal(null)} />}
     </div>
   );
 }

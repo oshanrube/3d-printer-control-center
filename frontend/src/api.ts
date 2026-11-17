@@ -25,6 +25,21 @@ export interface PrinterEvent {
   pushResult?: string | null;
 }
 
+// ---- Store inventory (phase 1) ----
+export interface StoreOption { group: string; value: string }
+export interface StoreItem {
+  productId: number; combinationId: number; reference: string; productName: string; options: StoreOption[];
+  colour: string | null; label: string; storeQty: number; inStore: boolean; enabled: boolean; minQty: number;
+  syncedAt: number | null; recipe: { partId: number; qty: number }[];
+}
+export interface SyncStatus { lastSyncAt: number | null; lastAttemptAt: number | null; lastError: string | null; items: number; reason: string | null; running: boolean }
+export interface PartGcode {
+  model: string; modelName: string; filename: string; size: number; uploadedAt: number;
+  meta: { printerModel?: string; filamentType?: string; filamentColour?: string; printTime?: string; warnings: string[] };
+}
+export interface Part { id: number; name: string; unitsPerPlate: number; material: string; onHand: number; notes: string; gcodes: PartGcode[] }
+export interface PrinterModel { model: string; name: string; printers: string[] }
+
 export interface StoppedPrint {
   id: number; printerId: number; printerName: string; filename: string | null; outcome: string;
   startedAt: number; endedAt: number; reason?: string | null; note?: string | null;
@@ -43,8 +58,9 @@ export const FAILURE_REASONS: { key: string; label: string }[] = [
 ];
 
 async function j<T>(url: string, opts?: RequestInit): Promise<T> {
-  const res = await fetch(url, { headers: { 'Content-Type': 'application/json' }, ...opts });
-  if (!res.ok) throw new Error(`${res.status}`);
+  const json = typeof opts?.body === 'string' ? { 'Content-Type': 'application/json' } : {};
+  const res = await fetch(url, { ...opts, headers: { ...json, ...(opts?.headers || {}) } });
+  if (!res.ok) throw new Error((await res.json().catch(() => null))?.error || `${res.status}`);
   return res.status === 204 ? (undefined as T) : res.json();
 }
 
@@ -80,6 +96,22 @@ export const api = {
     if (!res.ok) throw new Error(body?.error || `server returned ${res.status}`);
     return body;
   },
+  storeItems: () => j<{ status: SyncStatus; items: StoreItem[] }>('/api/store/items'),
+  storeSync: (reason: 'manual' | 'dashboard') => j<{ status: SyncStatus; items: StoreItem[] }>('/api/store/sync', { method: 'POST', body: JSON.stringify({ reason }) }),
+  updateItem: (i: StoreItem, patch: { enabled?: boolean; minQty?: number }) =>
+    j<StoreItem>(`/api/store/items/${i.productId}/${i.combinationId}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+  setRecipe: (i: StoreItem, parts: { partId: number; qty: number }[]) =>
+    j<StoreItem>(`/api/store/items/${i.productId}/${i.combinationId}/recipe`, { method: 'PUT', body: JSON.stringify({ parts }) }),
+  models: () => j<PrinterModel[]>('/api/store/models'),
+  parts: () => j<Part[]>('/api/parts'),
+  addPart: (p: { name: string; unitsPerPlate: number; material: string }) => j<Part>('/api/parts', { method: 'POST', body: JSON.stringify(p) }),
+  updatePart: (id: number, patch: Partial<Pick<Part, 'name' | 'unitsPerPlate' | 'material' | 'onHand' | 'notes'>>) =>
+    j<Part>(`/api/parts/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+  deletePart: (id: number) => j(`/api/parts/${id}`, { method: 'DELETE' }),
+  uploadGcode: (id: number, model: string, file: File) =>
+    j<Part>(`/api/parts/${id}/gcode/${model}`, { method: 'PUT', body: file,
+      headers: { 'Content-Type': 'application/octet-stream', 'X-Filename': encodeURIComponent(file.name) } }),
+  deleteGcode: (id: number, model: string) => j<Part>(`/api/parts/${id}/gcode/${model}`, { method: 'DELETE' }),
   snapshotUrl: (id: number) => `/api/camera/${id}/snapshot`,
   unlabelled: () => j<StoppedPrint[]>('/api/prints/unlabelled'),
   finished: () => j<StoppedPrint[]>('/api/prints/finished'),

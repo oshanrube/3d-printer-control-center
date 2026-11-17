@@ -194,3 +194,39 @@ main{margin-top:16px}
             touch-action: none; cursor: grab; }
 .cv-img { max-width: 100%; max-height: 100%; object-fit: contain; user-select: none; -webkit-user-drag: none;
           transform-origin: center center; will-change: transform; }
+
+/* Store inventory */
+.modal-box.inv { max-width: 980px; width: 100%; }
+.inv-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+.inv-head h2 { margin: 0; }
+.inv-filters { gap: 12px; margin-bottom: 8px; align-items: center; flex-wrap: wrap; }
+.inv-search, .inv-pname, .inv-newpart > input, .inv-mat, .inv-recipe select {
+  padding: 8px 10px; background: var(--surface-2); color: var(--text); border: 1px solid var(--border); border-radius: 8px; font: inherit; }
+.inv-search { flex: 1; min-width: 200px; }
+.inv-check { display: inline-flex; align-items: center; gap: 6px; font-size: .85rem; cursor: pointer; }
+.inv-check input { width: 18px; height: 18px; }
+.inv-num { width: 64px; padding: 6px 8px; background: var(--surface-2); color: var(--text); border: 1px solid var(--border); border-radius: 8px; font: inherit; }
+.inv-product { border: 1px solid var(--border); border-radius: 10px; margin-bottom: 8px; overflow: hidden; }
+.inv-prow { display: flex; align-items: center; gap: 10px; padding: 10px 12px; cursor: pointer; background: var(--surface-2); flex-wrap: wrap; }
+.inv-item { display: flex; gap: 12px; padding: 10px 12px; border-top: 1px solid var(--border); align-items: flex-start; }
+.inv-item.on { background: color-mix(in srgb, var(--accent) 6%, transparent); }
+.inv-item.gone { opacity: .55; }
+.inv-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.inv-main code { font-size: .85rem; }
+.inv-qty { text-align: right; display: flex; flex-direction: column; gap: 6px; align-items: flex-end; white-space: nowrap; }
+.inv-recipe { display: flex; flex-direction: column; gap: 8px; padding: 10px; margin-top: 6px; border: 1px dashed var(--border); border-radius: 8px; }
+.inv-recipe .row { gap: 8px; align-items: center; }
+.inv-warn { color: var(--st-paused); }
+.inv-err { color: var(--st-offline); }
+.inv-newpart { gap: 8px; margin-bottom: 12px; flex-wrap: wrap; align-items: center; }
+.inv-newpart > input:first-child { flex: 1; min-width: 200px; }
+.inv-mat { width: 130px; }
+.inv-part { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; display: flex; flex-direction: column; gap: 6px; }
+.inv-part > .row { gap: 8px; align-items: center; flex-wrap: wrap; }
+.inv-pname { flex: 1; min-width: 180px; font-weight: 600; }
+.inv-slot { display: flex; align-items: center; gap: 10px; font-size: .85rem; flex-wrap: wrap; padding: 4px 0; border-top: 1px dashed var(--border); }
+.inv-slot b { min-width: 70px; }
+@media (max-width: 640px) {
+  .inv-item { flex-wrap: wrap; }
+  .inv-qty { flex-direction: row; align-items: center; width: 100%; justify-content: space-between; }
+}
