@@ -1,0 +1,12 @@
+#!/bin/sh
+# GET-only HTTP for the Qwen worker (it has no curl): printers' Moonraker (:7125) and the
+# control center's API are safe to read, but a POST can pause/cancel a live print.
+#   http-get <url> [output-file under /workspace/data]
+set -eu
+url=${1:-}; out=${2:-}
+case "$url" in http://*|https://*) ;; *) echo "usage: http-get <http(s)-url> [output-file]" >&2; exit 2;; esac
+if [ -n "$out" ]; then
+  case "$(realpath -m "$out")" in /workspace/data/*) ;; *) echo "output must be under /workspace/data" >&2; exit 2;; esac
+  exec curl -sS -G -m 60 --max-filesize 200000000 -o "$out" -w "HTTP %{http_code}, %{size_download} bytes -> $out\n" -- "$url"
+fi
+exec curl -sS -G -m 30 --max-filesize 2000000 -- "$url"
