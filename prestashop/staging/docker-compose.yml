@@ -1,0 +1,46 @@
+# Staging copy of store.onicindustries.com (separate project, volumes, network, DB password).
+name: onicindustries-staging
+services:
+  mysql:
+    image: mysql:5.7
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${STAGING_DB_ROOT_PASSWORD}
+      MYSQL_DATABASE: onicindustries
+      MYSQL_USER: onic_app
+      MYSQL_PASSWORD: ${STAGING_DB_PASSWORD}
+    volumes:
+      - mysql_data:/var/lib/mysql
+    networks:
+      - staging_network
+  onicindustries:
+    image: prestashop/prestashop:9.1.5-apache
+    restart: unless-stopped
+    depends_on:
+      - mysql
+    environment:
+      DB_SERVER: mysql
+      DB_NAME: onicindustries
+      DB_USER: onic_app
+      DB_PASSWD: ${STAGING_DB_PASSWORD}
+      PS_ENABLE_SSL: 1
+      PS_COUNTRY: lk
+    volumes:
+      - onicindustries_data:/var/www/html
+    networks:
+      - staging_network
+      - traefik-proxy
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=traefik-proxy
+      - traefik.http.routers.onicstaging.rule=Host(`staging-store.onicindustries.com`)
+      - traefik.http.routers.onicstaging.entrypoints=websecure
+      - traefik.http.routers.onicstaging.tls.certresolver=letsencrypt
+      - traefik.http.services.onicstaging.loadbalancer.server.port=80
+volumes:
+  mysql_data:
+  onicindustries_data:
+networks:
+  staging_network:
+  traefik-proxy:
+    external: true
