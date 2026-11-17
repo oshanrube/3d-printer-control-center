@@ -31,18 +31,18 @@ export function StoreJobStrip({ r, storeColours, onChange, job }: { r: PrinterRe
           <div class="spacer" /><JobActions j={job} onDone={onChange} />
         </div>
       )}
-      {r.available && (
-        <div class="job-fil">
+      {(
+        <div class="job-fil" title={r.filamentSource === 'printer' ? 'Read from the spool set on the printer' : 'Set here: this printer can\'t report its spool'}>
           🧵{' '}
           {r.spools.length
             ? r.spools.map(s => (
                 <span class="spool" title={`${s.slot}${s.name ? ` · ${s.name}` : ''}`}>
                   <i style={{ background: s.colour || 'transparent' }} />{s.material} {s.colourName || s.colour}{r.spools.length > 1 ? ` (${s.slot})` : ''}
                 </span>))
-            : <span class="muted">{r.filamentSource === 'none' ? 'No filament set' : 'No spool loaded'}</span>}
+            : <span class="muted">{r.filamentSource === 'none' ? 'Loaded filament not set' : 'No spool loaded'}</span>}
           {r.filamentSource === 'printer'
             ? <button class="chip" title="Read the spools set on the printer's screen" onClick={() => act(api.refreshFilament(r.id), 'Reading the spools')}>↻</button>
-            : <button class="chip" onClick={() => setEditing(!editing)}>{editing ? 'Close' : 'Set'}</button>}
+            : <button class="chip" onClick={() => { setMaterial(r.manualMaterial); setColour(r.manualColour); setEditing(!editing); }}>{editing ? 'Close' : r.filamentSource === 'manual' ? 'Change' : 'Set'}</button>}
         </div>
       )}
       {editing && r.filamentSource !== 'printer' && (
@@ -53,7 +53,7 @@ export function StoreJobStrip({ r, storeColours, onChange, job }: { r: PrinterRe
             {storeColours.map(c => <option value={c}>{c}</option>)}
           </select>
           <button class="btn btn-sm btn-primary" onClick={() => act(api.printerJobs(r.id, { manualMaterial: material, manualColour: colour }), 'Saving').then(() => setEditing(false))}>Save</button>
-          <span class="muted">This printer's firmware can't report its spool: update it to 2.3.5 to read it automatically.</span>
+          <span class="muted">This printer's firmware can't report its spool, so set what's loaded here when you change it.</span>
         </div>
       )}
     </div>
