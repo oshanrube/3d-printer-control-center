@@ -246,3 +246,4 @@ main{margin-top:16px}
 .q-colours { display: flex; gap: 14px; flex-wrap: wrap; }
 .q-colour { display: inline-flex; align-items: center; gap: 6px; font-size: .88rem; }
 .q-colour input { width: 34px; height: 28px; padding: 0; border: none; background: none; cursor: pointer; }
+.inv-hint { padding: 12px; border: 1px dashed var(--border); border-radius: 10px; font-size: .9rem; }

@@ -17,7 +17,7 @@
  */
 import { config } from './config.js';
 import { isPrintOk } from './print-ok.js';
-import { printsRepo } from './db.js';
+import { db, printsRepo } from './db.js';
 import type { Fleet } from './fleet.js';
 import type { LiveState, PrinterEvent } from './types.js';
 
@@ -36,6 +36,33 @@ export const JAM = {
   SELF_BASE_TO_MIN: 15,
   SELF_RECENT_MIN: 5,
 };
+
+/**
+ * Each printer's normal hotend power relative to its peers, learned from successful prints
+ * (completed, not labelled bad) of files that other printers also printed. Hotends differ:
+ * healthy Nami runs ~0.90 and Usopp ~0.85 of their peers, so the fixed 0.85 limit paused
+ * healthy Nami prints 4 times in a day (2026-11-16/17). Cached for an hour.
+ */
+let baselineCache: { at: number; map: Map<number, { ratio: number; n: number }> } | null = null;
+export function peerBaselines(now = Date.now()): Map<number, { ratio: number; n: number }> {
+  if (baselineCache && now - baselineCache.at < 3600_000) return baselineCache.map;
+  const rows = db.prepare(`
+    SELECT p.printer_id pid, p.filename f, AVG(t.extruder_power) pw, ROUND(AVG(t.extruder_target)) tgt, COUNT(*) n
+    FROM prints p JOIN telemetry t ON t.print_id = p.id
+    WHERE p.outcome = 'completed' AND (p.failure_reason IS NULL OR p.failure_reason = 'not_failed')
+      AND p.started_at > ? AND t.extruder_power > 0.05
+    GROUP BY p.printer_id, p.filename HAVING n > 60`).all(now - 30 * 86400e3) as any[];
+  const ratios = new Map<number, number[]>();
+  for (const r of rows) {
+    const peers = rows.filter(o => o.f === r.f && o.pid !== r.pid && o.tgt === r.tgt).map(o => o.pw);
+    if (!peers.length) continue;
+    if (!ratios.has(r.pid)) ratios.set(r.pid, []);
+    ratios.get(r.pid)!.push(r.pw / median(peers));
+  }
+  const map = new Map([...ratios].map(([pid, xs]) => [pid, { ratio: median(xs), n: xs.length }]));
+  baselineCache = { at: now, map };
+  return map;
+}
 
 export interface Row { t: number; power: number | null; target: number | null; fan0: number | null }
 
@@ -110,7 +137,11 @@ export class JamDetector {
         peerNames = peers.filter(p => p.level!.target === me.level!.target && Math.abs(p.level!.fan - me.level!.fan) <= JAM.FAN_TOLERANCE)
           .map(p => this.fleet.client(p.s.printerId)?.printer.name || `Printer ${p.s.printerId}`);
       }
-      if (ratio !== null && ratio < JAM.PEER_RATIO) t.peerSince ??= now; else t.peerSince = undefined;
+      // Compare with this printer's own normal level against its peers.
+      const base = peerBaselines(now).get(me.s.printerId);
+      const learned = !!base && base.n >= 2;
+      const relRatio = ratio === null ? null : ratio / (learned ? base!.ratio : 1);
+      if (relRatio !== null && relRatio < JAM.PEER_RATIO) t.peerSince ??= now; else t.peerSince = undefined;
 
       // Self check
       const drop = selfDrop(me.rows, now);
@@ -121,20 +152,21 @@ export class JamDetector {
       const selfHit = t.selfSince !== undefined && now - t.selfSince >= hold;
       if (!peerHit && !selfHit) continue;
       t.alerted = true;
-      this.warn(me.s, peerHit ? { kind: 'peer', ratio: ratio!, peers: peerNames } : { kind: 'self', drop: drop! });
+      this.warn(me.s, peerHit ? { kind: 'peer', ratio: ratio!, peers: peerNames, normal: learned ? base!.ratio : null } : { kind: 'self', drop: drop! });
     }
   }
 
-  private warn(s: LiveState, why: { kind: 'peer'; ratio: number; peers: string[] } | { kind: 'self'; drop: number }) {
+  private warn(s: LiveState, why: { kind: 'peer'; ratio: number; peers: string[]; normal: number | null } | { kind: 'self'; drop: number }) {
     const name = this.fleet.client(s.printerId)?.printer.name || `Printer ${s.printerId}`;
     const detail = why.kind === 'peer'
-      ? `Its hotend heater is working ${Math.round((1 - why.ratio) * 100)}% less than ${why.peers.join(' and ')} on the same file, which usually means little or no plastic is flowing.`
+      ? `Its hotend heater is working ${Math.round((1 - why.ratio) * 100)}% less than ${why.peers.join(' and ')} on the same file${why.normal !== null ? ` (normally ${Math.round(Math.abs(1 - why.normal) * 100)}% ${why.normal < 1 ? 'less' : 'more'})` : ''}, which usually means little or no plastic is flowing.`
       : `Its hotend heater power dropped ${Math.round(why.drop * 100)}% and stayed down, at the same temperature and fan speed, which usually means filament stopped flowing.`;
-    const pause = config.autoPauseJam && s.state === 'printing';
+    // A peer comparison without a learned normal level for this printer only warns.
+    const pause = config.autoPauseJam && s.state === 'printing' && !(why.kind === 'peer' && why.normal === null);
     this.report({
       printerId: s.printerId, printerName: name, type: 'jam_suspected', severity: pause ? 'critical' : 'warning',
       title: `🧵 ${name}: possible jam / printing in air`,
-      message: `${detail}${pause ? ' Pausing the print.' : ' Check the camera.'}`,
+      message: `${detail}${pause ? ' Pausing the print.' : why.kind === 'peer' && why.normal === null ? ' Not pausing: this printer has too few successful prints to know its normal level yet. Check the camera.' : ' Check the camera.'}`,
       filename: s.filename ?? null, actionTaken: pause ? 'auto-paused' : null,
     });
     if (pause) this.pause(s.printerId, 'jam', 'jam / printing in air suspected', detail, true);

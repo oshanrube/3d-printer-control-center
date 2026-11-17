@@ -12,7 +12,7 @@ const kb = (n: number) => n > 1e6 ? `${(n / 1e6).toFixed(1)} MB` : `${Math.round
 const fail = (what: string) => (e: any) => alert(`${what}: ${e?.message || e}`);
 
 export function InventoryModal({ onClose }: { onClose: () => void }) {
-  const [tab, setTab] = useState<'items' | 'parts' | 'queue'>('items');
+  const [tab, setTab] = useState<'items' | 'parts' | 'queue' | 'colours'>('items');
   const [items, setItems] = useState<StoreItem[] | null>(null);
   const [status, setStatus] = useState<SyncStatus | null>(null);
   const [parts, setParts] = useState<Part[]>([]);
@@ -48,11 +48,13 @@ export function InventoryModal({ onClose }: { onClose: () => void }) {
         <div class="row" style="margin-bottom:12px">
           <button class={`btn btn-sm ${tab === 'items' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setTab('items')}>Store items</button>
           <button class={`btn btn-sm ${tab === 'parts' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setTab('parts')}>Printed parts ({parts.length})</button>
+          <button class={`btn btn-sm ${tab === 'colours' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setTab('colours')}>Colours</button>
           <button class={`btn btn-sm ${tab === 'queue' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setTab('queue')}>Queue (dry run)</button>
         </div>
         {tab === 'items' && <ItemsTab items={items} parts={parts} onItem={replaceItem} />}
         {tab === 'parts' && <PartsTab parts={parts} models={models} onPart={replacePart} reload={loadParts} stock={stock} colours={storeColours} />}
         {tab === 'queue' && <QueueTab />}
+        {tab === 'colours' && <ColourTable />}
       </div>
     </div>
   );
@@ -81,7 +83,7 @@ function ItemsTab({ items, parts, onItem }: { items: StoreItem[] | null; parts: 
         <input class="inv-search" placeholder="Search name or reference…" value={q} onInput={(e: any) => setQ(e.currentTarget.value)} />
         <label class="inv-check"><input type="checkbox" checked={onlyEnabled} onChange={(e: any) => setOnlyEnabled(e.currentTarget.checked)} /> Managed only</label>
       </div>
-      <p class="muted" style="margin-bottom:10px">Turn on the items the printers should keep in stock, set the minimum, and say which printed parts make one.</p>
+      <p class="muted" style="margin-bottom:10px">Turn on the items the printers should keep in stock, set the minimum, and say which printed parts make one. G-code is uploaded per part in <b>Printed parts</b>; store colours are matched to filament in <b>Colours</b>.</p>
       {products.map(([pid, name]) => {
         const rows = shown.filter(i => i.productId === pid);
         const all = items.filter(i => i.productId === pid);
@@ -192,7 +194,7 @@ function PartsTab({ parts, models, onPart, reload, stock, colours }: { parts: Pa
         <input class="inv-mat" placeholder="Material (ABS…)" value={material} onInput={(e: any) => setMaterial(e.currentTarget.value)} />
         <button class="btn btn-sm btn-primary" disabled={!name.trim()} onClick={create}>Add part</button>
       </div>
-      {!sorted.length && <p class="muted">No parts yet.</p>}
+      {!sorted.length && <p class="inv-hint">No parts yet. Add one above: each part then gets an <b>Upload</b> button for each printer model (K2 Plus, K1, K1C).</p>}
       {sorted.map(p => <PartCard part={p} models={models} onPart={onPart} reload={reload} stock={stock.filter(x => x.partId === p.id)} colours={colours} />)}
     </>
   );
@@ -292,12 +294,24 @@ function QueueTab() {
         </div>
       ))}
 
+      <ColourTable onChange={load} />
+    </>
+  );
+}
+
+function ColourTable({ onChange }: { onChange?: () => void }) {
+  const [colours, setColours] = useState<{ map: Record<string, string>; storeColours: string[] } | null>(null);
+  useEffect(() => { api.colours().then(setColours).catch(fail('Loading colours')); }, []);
+  const save = (name: string, hex: string) => colours && api.setColours({ ...colours.map, [name]: hex })
+    .then(c => { setColours(c); onChange?.(); }).catch(fail('Saving the colour'));
+  return (
+    <>
       <h3 class="inv-h3">Colour table</h3>
-      <p class="muted" style="margin-bottom:8px">Printers report spool colours as codes: match each store colour to the filament colour you load for it.</p>
+      <p class="muted" style="margin-bottom:8px">Printers report spool colours as codes. Click a swatch and pick the filament colour you load for that store colour.</p>
       <div class="q-colours">
         {colours?.storeColours.map(name => (
           <label class="q-colour">
-            <input type="color" value={colours.map[name] || '#888888'} onChange={(e: any) => saveColour(name, e.currentTarget.value)} />
+            <input type="color" value={colours.map[name] || '#888888'} onChange={(e: any) => save(name, e.currentTarget.value)} />
             {name}{!colours.map[name] && <span class="inv-warn"> (not set)</span>}
           </label>
         ))}
