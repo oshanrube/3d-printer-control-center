@@ -52,6 +52,13 @@ export interface Plan {
   computedAt: number; dryRun: boolean; printers: PrinterReadiness[]; jobs: PlannedJob[];
   items: { reference: string; label: string; storeQty: number; minQty: number; short: number; colour: string | null; problems: string[] }[];
 }
+export interface StoreJob {
+  id: number; part: string; partId: number; colour: string | null; units: number; printerId: number; printer: string; file: string;
+  status: 'loading' | 'loaded' | 'printing' | 'printed' | 'completed' | 'failed' | 'cancelled'; note: string; forItems: string[];
+  createdAt: number; loadedAt: number | null; startedAt: number | null; endedAt: number | null;
+}
+export interface StoreUpdate { id: number; at: number; reference: string; delta: number; before: number | null; after: number | null; dryRun: boolean; error: string | null; parts: string }
+export interface JobsState { autoLoad: boolean; liveWrites: boolean; jobs: StoreJob[]; updates: StoreUpdate[] }
 export interface PrinterModel { model: string; name: string; printers: string[] }
 
 export interface StoppedPrint {
@@ -134,6 +141,10 @@ export const api = {
     j<Part>(`/api/parts/${id}/files/${fileId}`, { method: 'PATCH', body: JSON.stringify({ unitsPerPlate }) }),
   deleteFile: (id: number, fileId: number) => j<Part>(`/api/parts/${id}/files/${fileId}`, { method: 'DELETE' }),
   plan: () => j<Plan>('/api/store/plan'),
+  storeJobs: () => j<JobsState>('/api/store/jobs'),
+  jobSettings: (patch: { autoLoad?: boolean; liveWrites?: boolean }) => j<JobsState>('/api/store/jobs/settings', { method: 'POST', body: JSON.stringify(patch) }),
+  dispatchNow: () => j<JobsState>('/api/store/dispatch', { method: 'POST' }),
+  jobAction: (id: number, action: 'complete' | 'failed' | 'cancel' | 'start') => j<JobsState>(`/api/store/jobs/${id}/${action}`, { method: 'POST' }),
   printerJobs: (id: number, patch: { available?: boolean; manualMaterial?: string; manualColour?: string }) =>
     j<PrinterReadiness>(`/api/store/printers/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
   bedCleared: (id: number) => j<PrinterReadiness>(`/api/store/printers/${id}/bed-cleared`, { method: 'POST' }),

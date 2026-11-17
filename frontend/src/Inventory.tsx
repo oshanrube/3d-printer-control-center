@@ -1,7 +1,7 @@
 // Store inventory (phase 1): the store's items with minimum stock and recipes, and the printed
 // parts with their G-code per printer model. Read-only towards the store.
 import { useEffect, useMemo, useState } from 'preact/hooks';
-import { api, type Part, type Plan, type PrinterModel, type StoreItem, type SyncStatus } from './api';
+import { api, type JobsState, type Part, type Plan, type PrinterModel, type StoreItem, type StoreJob, type SyncStatus } from './api';
 
 const ago = (t: number | null) => {
   if (!t) return 'never';
@@ -26,8 +26,8 @@ function EditField({ value, onSave, type = 'text', ...rest }: { value: string | 
     onKeyDown={(e: any) => { if (e.key === 'Enter') e.currentTarget.blur(); if (e.key === 'Escape') { setV(String(value)); setEditing(false); } }} />;
 }
 
-export type InventoryTab = 'items' | 'parts' | 'colours' | 'queue';
-export const INVENTORY_TABS: InventoryTab[] = ['items', 'parts', 'colours', 'queue'];
+export type InventoryTab = 'items' | 'parts' | 'colours' | 'queue' | 'jobs';
+export const INVENTORY_TABS: InventoryTab[] = ['items', 'parts', 'colours', 'queue', 'jobs'];
 
 /** The store inventory page (#/inventory[/tab]): the tab lives in the address, so reload and Back keep it. */
 export function InventoryPage({ tab }: { tab: InventoryTab }) {
@@ -66,12 +66,14 @@ export function InventoryPage({ tab }: { tab: InventoryTab }) {
           <button class={`btn btn-sm ${tab === 'items' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setTab('items')}>Store items</button>
           <button class={`btn btn-sm ${tab === 'parts' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setTab('parts')}>Printed parts ({parts.length})</button>
           <button class={`btn btn-sm ${tab === 'colours' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setTab('colours')}>Colours</button>
-          <button class={`btn btn-sm ${tab === 'queue' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setTab('queue')}>Queue (dry run)</button>
+          <button class={`btn btn-sm ${tab === 'queue' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setTab('queue')}>Queue</button>
+          <button class={`btn btn-sm ${tab === 'jobs' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setTab('jobs')}>Jobs</button>
         </div>
         {tab === 'items' && <ItemsTab items={items} parts={parts} onItem={replaceItem} colours={storeColours} />}
         {tab === 'parts' && <PartsTab parts={parts} models={models} onPart={replacePart} reload={loadParts} stock={stock} colours={storeColours} />}
         {tab === 'queue' && <QueueTab />}
         {tab === 'colours' && <ColourTable />}
+        {tab === 'jobs' && <JobsTab />}
     </section>
   );
 }
@@ -326,7 +328,7 @@ function QueueTab() {
   const ready = plan.printers.filter(p => p.ready).map(p => p.name);
   return (
     <>
-      <p class="muted" style="margin-bottom:10px"><b>Dry run:</b> this is what the controller would load and where. Nothing is sent to the printers yet.
+      <p class="muted" style="margin-bottom:10px">What the controller plans to print and where. It only loads printers when <b>Auto-load</b> is on (Jobs tab).
         {' '}Printers ready for a job: {ready.length ? ready.join(', ') : 'none (turn on “Store jobs” on a printer card and confirm its bed is clear)'}.
         {' '}<button class="chip" onClick={load}>↻ Refresh</button></p>
 
@@ -369,6 +371,86 @@ function ColourTable({ onChange }: { onChange?: () => void }) {
           </label>
         ))}
       </div>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+
+const STATUS: Record<StoreJob['status'], string> = {
+  loading: '⏳ loading', loaded: '📦 loaded: clear the bed and start', printing: '🖨️ printing', printed: '✅ printed: check it',
+  completed: '✔️ completed', failed: '❌ failed', cancelled: '— cancelled',
+};
+export function jobLabel(j: StoreJob) { return `${j.part} (${j.units}${j.colour ? ` · ${j.colour}` : ''})`; }
+
+export function JobActions({ j, onDone }: { j: StoreJob; onDone: (s: JobsState) => void }) {
+  const act = (a: 'complete' | 'failed' | 'cancel' | 'start', ask?: string) => {
+    if (ask && !confirm(ask)) return;
+    api.jobAction(j.id, a).then(onDone).catch(fail('Job'));
+  };
+  return (
+    <span class="job-actions">
+      {j.status === 'loaded' && <button class="chip" onClick={() => act('start', `Start ${j.file} on ${j.printer}? Make sure the bed is clear.`)}>▶ Start</button>}
+      {j.status === 'loaded' && <button class="chip" onClick={() => act('cancel', 'Cancel this job? It is planned again if the item is still short.')}>Cancel</button>}
+      {j.status === 'printed' && <button class="chip chip-ok" onClick={() => act('complete', `Is ${jobLabel(j)} good? This adds it to parts on hand (and the store, when complete sets exist).`)}>Complete</button>}
+      {(j.status === 'printed' || j.status === 'printing') && <button class="chip" onClick={() => act('failed', 'Mark this print as failed? It will be printed again.')}>Failed</button>}
+    </span>
+  );
+}
+
+function JobsTab() {
+  const [st, setSt] = useState<JobsState | null>(null);
+  const load = () => api.storeJobs().then(setSt).catch(fail('Loading jobs'));
+  useEffect(() => { load(); const t = setInterval(load, 15_000); return () => clearInterval(t); }, []);
+  if (!st) return <p class="muted">Loading…</p>;
+  const set = (patch: { autoLoad?: boolean; liveWrites?: boolean }, ask: string) => { if (confirm(ask)) api.jobSettings(patch).then(setSt).catch(fail('Saving')); };
+  const active = st.jobs.filter(j => ['loading', 'loaded', 'printing', 'printed'].includes(j.status));
+  const done = st.jobs.filter(j => !active.includes(j));
+  const when = (t: number | null) => t ? new Date(t).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
+  return (
+    <>
+      <div class="jobs-switches">
+        <label class="inv-check">
+          <input type="checkbox" checked={st.autoLoad} onChange={(e: any) => { const on = e.currentTarget.checked; e.currentTarget.checked = st.autoLoad;
+            set({ autoLoad: on }, on ? 'Turn on auto-load? Planned plates will be uploaded to ready printers, and their OTHER G-code files deleted. Printing still needs you to start it.' : 'Turn off auto-load? Nothing new is sent to printers.'); }} />
+          <b>Auto-load jobs</b> <span class="muted">{st.autoLoad ? 'on: ready printers get their next plate' : 'off: plan only, nothing is sent to printers'}</span>
+        </label>
+        <label class="inv-check">
+          <input type="checkbox" checked={st.liveWrites} onChange={(e: any) => { const on = e.currentTarget.checked; e.currentTarget.checked = st.liveWrites;
+            set({ liveWrites: on }, on ? 'Turn on live store updates? Completed sets will raise the stock on store.onicindustries.com.' : 'Back to dry run? Store stock changes are only logged.'); }} />
+          <b>Store stock updates</b> <span class="muted">{st.liveWrites ? 'live: the store is updated' : 'dry run: changes are logged below, the store is not touched'}</span>
+        </label>
+        <button class="btn btn-sm" disabled={!st.autoLoad} onClick={() => api.dispatchNow().then(setSt).catch(fail('Loading jobs'))}>Load now</button>
+      </div>
+
+      <h3 class="inv-h3">Active jobs ({active.length})</h3>
+      {!active.length && <p class="muted">None.</p>}
+      {active.map(j => (
+        <div class={`q-row job-${j.status}`} key={j.id}>
+          <b>{j.printer}</b><span>{jobLabel(j)}</span><span class="muted">{STATUS[j.status]}</span>
+          <span class="muted">{j.file} · for {j.forItems.join(', ')}</span>
+          <div class="spacer" /><JobActions j={j} onDone={setSt} />
+        </div>
+      ))}
+
+      <h3 class="inv-h3">Store stock changes{st.liveWrites ? '' : ' (dry run)'}</h3>
+      {!st.updates.length && <p class="muted">None yet. They appear when you complete printed jobs and full sets of parts exist.</p>}
+      {st.updates.map(u => (
+        <div class={`q-row ${u.error ? 'job-failed' : ''}`} key={u.id}>
+          <span class="muted">{when(u.at)}</span><code>{u.reference}</code>
+          <span>{u.error ? `❌ ${u.error}` : `${u.dryRun ? 'would go' : 'went'} ${u.before} → ${u.after}`}</span>
+          <span class="muted">used {u.parts}</span>
+        </div>
+      ))}
+
+      <h3 class="inv-h3">Recent jobs</h3>
+      {!done.length && <p class="muted">None yet.</p>}
+      {done.map(j => (
+        <div class="q-row" key={j.id}>
+          <span class="muted">{when(j.endedAt || j.createdAt)}</span><b>{j.printer}</b><span>{jobLabel(j)}</span>
+          <span class="muted">{STATUS[j.status]}{j.note ? ` · ${j.note}` : ''}</span>
+        </div>
+      ))}
     </>
   );
 }

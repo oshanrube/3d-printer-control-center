@@ -45,7 +45,7 @@ const PUSH_FOR: Partial<Record<EventType, boolean>> = {
   print_finished: true, print_cancelled: true, filament_runout: true,
   klipper_error: true, printer_offline: true, stall_suspected: true,
   printer_fault: true, heaters_idle: true, heaters_off: true, ai_failure: true, jam_suspected: true, reference_mismatch: true,
-  auto_paused: true, pause_reminder: true,
+  auto_paused: true, pause_reminder: true, store_job: true,
 };
 
 /** A print this engine paused because of a suspected failure; reminded about until it's dealt with. */

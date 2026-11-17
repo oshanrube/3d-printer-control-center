@@ -1,10 +1,11 @@
 // Store jobs on a printer card: available switch, loaded filament, bed cleared, readiness.
 import { useState } from 'preact/hooks';
-import { api, type PrinterReadiness } from './api';
+import { api, type PrinterReadiness, type StoreJob } from './api';
+import { JobActions, jobLabel } from './Inventory';
 
 const fail = (what: string) => (e: any) => alert(`${what}: ${e?.message || e}`);
 
-export function StoreJobStrip({ r, storeColours, onChange }: { r: PrinterReadiness; storeColours: string[]; onChange: () => void }) {
+export function StoreJobStrip({ r, storeColours, onChange, job }: { r: PrinterReadiness; storeColours: string[]; onChange: () => void; job?: StoreJob }) {
   const [editing, setEditing] = useState(false);
   const [material, setMaterial] = useState(r.manualMaterial);
   const [colour, setColour] = useState(r.manualColour);
@@ -23,6 +24,13 @@ export function StoreJobStrip({ r, storeColours, onChange }: { r: PrinterReadine
           <button class="btn btn-sm btn-primary" onClick={() => act(api.bedCleared(r.id), 'Saving')}>Bed cleared</button>
         )}
       </div>
+      {job && (
+        <div class={`job-now job-${job.status}`}>
+          📦 <b>{jobLabel(job)}</b>
+          <span class="muted">{job.status === 'loaded' ? `loaded (${job.file}): clear the bed and start it` : job.status === 'printing' ? 'printing' : job.status === 'printed' ? 'printed: check it' : job.status}</span>
+          <div class="spacer" /><JobActions j={job} onDone={onChange} />
+        </div>
+      )}
       {r.available && (
         <div class="job-fil">
           🧵{' '}

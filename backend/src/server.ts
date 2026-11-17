@@ -7,7 +7,8 @@ import { join } from 'node:path';
 import type { WebSocket } from 'ws';
 import { config } from './config.js';
 import { registerInventory } from './inventory.js';
-import { registerStoreJobs } from './store-jobs.js';
+import { registerStoreJobs, setAfterPrinterFree } from './store-jobs.js';
+import { dispatch, registerStoreDispatch } from './store-dispatch.js';
 import { printersRepo, eventsRepo, printsRepo, aiRepo } from './db.js';
 import type { AiAnalyzer } from './ai-analyzer.js';
 import type { RefComparer } from './ref-compare.js';
@@ -30,7 +31,10 @@ export function buildServer(fleet: Fleet, ai: { current?: AiAnalyzer } = {}, ref
   const app = Fastify({ logger: false });
   app.register(fastifyWebsocket);
   registerInventory(app, fleet);   // store sync, parts, recipes, G-code library
-  registerStoreJobs(app, fleet);   // printer job settings, filament, colours, dry-run plan
+  registerStoreJobs(app, fleet);   // printer job settings, filament, colours, plan
+  const reportEv = (e: any) => engine.current?.report(e);
+  registerStoreDispatch(app, fleet, reportEv);   // phase 3: load jobs, follow them, Complete -> store stock
+  setAfterPrinterFree(() => { dispatch(fleet, reportEv, 'printer free').catch(() => {}); });
 
   const clients = new Set<WebSocket>();
   const send = (sock: WebSocket, obj: any) => { try { sock.send(JSON.stringify(obj)); } catch { /* ignore */ } };

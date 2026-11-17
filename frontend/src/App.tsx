@@ -3,7 +3,7 @@ import { createPortal } from 'preact/compat';
 import { api, FAILURE_REASONS, type Printer, type PrinterEvent, type StoppedPrint } from './api';
 import { InventoryPage, INVENTORY_TABS, type InventoryTab } from './Inventory';
 import { StoreJobStrip } from './StoreJobs';
-import type { PrinterReadiness } from './api';
+import type { PrinterReadiness, StoreJob } from './api';
 import { useStore } from './store';
 import { enablePush, pushStatus } from './push';
 
@@ -100,10 +100,10 @@ function Camera({ printer }: { printer: Printer }) {
 }
 
 /* ---------- printer card ---------- */
-function PrinterCard({ printer, onEdit, toLabel, onLabelled, onLater, job, storeColours, onJob }: {
+function PrinterCard({ printer, onEdit, toLabel, onLabelled, onLater, job, storeJob, storeColours, onJob }: {
   printer: Printer; onEdit: (p: Printer) => void;
   toLabel?: StoppedPrint; onLabelled: () => void; onLater: (id: number) => void;
-  job?: PrinterReadiness; storeColours: string[]; onJob: () => void;
+  job?: PrinterReadiness; storeJob?: StoreJob; storeColours: string[]; onJob: () => void;
 }) {
   const s = printer.live;
   // While the firmware warms up / calibrates for a new print, Klipper still reports the
@@ -206,7 +206,7 @@ function PrinterCard({ printer, onEdit, toLabel, onLabelled, onLater, job, store
           <button class="btn btn-sm btn-danger" onClick={() => act('cancel')}>🛑 Cancel</button>
         </div>
       )}
-      {job && s?.online && <StoreJobStrip r={job} storeColours={storeColours} onChange={onJob} />}
+      {job && s?.online && <StoreJobStrip r={job} job={storeJob} storeColours={storeColours} onChange={onJob} />}
     </div>
   );
 }
@@ -546,8 +546,12 @@ export function App() {
   }, []);
   // Store jobs: each printer's readiness (refreshed every 30 s while visible, and after changes).
   const [jobs, setJobs] = useState<Record<number, PrinterReadiness>>({});
+  const [storeJobs, setStoreJobs] = useState<Record<number, StoreJob>>({});
   const [storeColours, setStoreColours] = useState<string[]>([]);
-  const loadJobs = () => api.plan().then(p => setJobs(Object.fromEntries(p.printers.map(r => [r.id, r])))).catch(() => {});
+  const loadJobs = () => {
+    api.plan().then(p => setJobs(Object.fromEntries(p.printers.map(r => [r.id, r])))).catch(() => {});
+    api.storeJobs().then(s => setStoreJobs(Object.fromEntries(s.jobs.filter(j => ['loading', 'loaded', 'printing', 'printed'].includes(j.status)).map(j => [j.printerId, j])))).catch(() => {});
+  };
   useEffect(() => {
     loadJobs(); api.colours().then(c => setStoreColours(c.storeColours)).catch(() => {});
     const t = setInterval(() => { if (!document.hidden) loadJobs(); }, 30_000);
@@ -623,7 +627,7 @@ export function App() {
         <div class="grid">
           {sorted.map((p) => <PrinterCard key={p.id} printer={p} onEdit={(pr) => setModal({ kind: 'printer', p: pr })}
             toLabel={newestToLabel(p.id)} onLabelled={loadLabels} onLater={(id) => setLater(new Set([...later, id]))}
-            job={jobs[p.id]} storeColours={storeColours} onJob={loadJobs} />)}
+            job={jobs[p.id]} storeJob={storeJobs[p.id]} storeColours={storeColours} onJob={loadJobs} />)}
         </div>
 
         {events.length > 0 && (

@@ -98,6 +98,7 @@ export type EventType =
   | 'idle_off'
   | 'auto_paused'
   | 'pause_reminder'
+  | 'store_job'
   | 'paused'
   | 'resumed'
   | 'info';

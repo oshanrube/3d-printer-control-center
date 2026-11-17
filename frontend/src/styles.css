@@ -260,3 +260,9 @@ nav.pages { display: inline-flex; gap: 6px; }
 nav.pages a { text-decoration: none; }
 .inv-page { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px 24px; width: 100%; box-sizing: border-box; }
 @media (max-width: 640px) { .inv-page { padding: 14px 12px; border-radius: 10px; } }
+.jobs-switches { display: flex; flex-direction: column; gap: 10px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; margin-bottom: 8px; align-items: flex-start; }
+.job-actions { display: inline-flex; gap: 6px; }
+.chip-ok { border-color: var(--st-ready); color: var(--st-ready); }
+.job-now { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.q-row.job-printed, .job-now.job-printed { border-color: color-mix(in srgb, var(--st-ready) 60%, var(--border)); }
+.q-row.job-failed { border-color: color-mix(in srgb, var(--st-offline) 60%, var(--border)); }

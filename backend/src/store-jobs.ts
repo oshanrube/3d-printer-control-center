@@ -18,6 +18,13 @@ CREATE TABLE IF NOT EXISTS printer_job_settings (
   manual_material TEXT NOT NULL DEFAULT '',    -- for printers that can't report their spool (1.3.x K1C firmware)
   manual_colour TEXT NOT NULL DEFAULT ''       -- a store colour name
 );
+CREATE TABLE IF NOT EXISTS store_jobs (       -- phase 3: one plate sent to a printer
+  id INTEGER PRIMARY KEY AUTOINCREMENT, part_id INTEGER NOT NULL, file_id INTEGER, colour TEXT NOT NULL DEFAULT '',
+  units INTEGER NOT NULL, printer_id INTEGER NOT NULL, printer_file TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL,                        -- loading, loaded, printing, printed, completed, failed, cancelled
+  for_items TEXT NOT NULL DEFAULT '[]', note TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL, loaded_at INTEGER, started_at INTEGER, ended_at INTEGER
+);
 CREATE TABLE IF NOT EXISTS part_stock (        -- parts on hand, per colour ('' = no colour)
   part_id INTEGER NOT NULL, colour TEXT NOT NULL DEFAULT '', qty INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (part_id, colour)
@@ -72,6 +79,11 @@ function saveSettings(printerId: number, patch: Partial<Record<'available' | 'be
 }
 
 const IDLE = ['standby', 'complete', 'cancelled'];
+export const ACTIVE_JOB = ['loading', 'loaded', 'printing', 'printed'];
+/** The store job a printer is holding (loaded, printing or printed and not yet confirmed). */
+export function activeJob(printerId: number): any {
+  return db.prepare(`SELECT * FROM store_jobs WHERE printer_id = ? AND status IN ('loading','loaded','printing','printed') ORDER BY id DESC LIMIT 1`).get(printerId);
+}
 const busy = (s: LiveState) => !!s.preparing || s.state === 'printing' || s.state === 'paused';
 
 export interface PrinterReadiness {
@@ -97,6 +109,7 @@ function readiness(fleet: Fleet, s: LiveState, colours: Record<string, string>):
     : busy(s) ? (s.preparing ? 'preparing a print' : s.state)
     : !IDLE.includes(s.state) ? `printer is in ${s.state}`
     : !st.available ? 'not available for store jobs'
+    : activeJob(s.printerId) ? `store job ${activeJob(s.printerId).status}`
     : !st.bedClear ? 'bed not confirmed clear'
     : !spools.length ? (reported === null ? 'set its loaded filament' : reported === undefined ? 'reading its spools…' : 'no spool loaded')
     : s.filamentDetected === false ? 'filament sensor reads empty: load filament'
@@ -137,6 +150,12 @@ export function plan(fleet: Fleet) {
   const onHand = new Map<string, number>();
   for (const r of db.prepare('SELECT * FROM part_stock').all() as any[]) onHand.set(`${r.part_id}|${r.colour}`, r.qty);
   const recipes = db.prepare('SELECT * FROM recipes').all() as any[];
+  // Plates already on their way count like parts on hand.
+  for (const j of db.prepare(`SELECT part_id, colour, SUM(units) u FROM store_jobs WHERE status IN ('loading','loaded','printing','printed') GROUP BY part_id, colour`).all() as any[])
+    onHand.set(`${j.part_id}|${j.colour}`, (onHand.get(`${j.part_id}|${j.colour}`) ?? 0) + j.u);
+  const failures = new Map<string, number>();
+  for (const j of db.prepare(`SELECT part_id, colour, COUNT(*) n FROM store_jobs WHERE status = 'failed' AND ended_at > ? GROUP BY part_id, colour`).all(Date.now() - 86400e3) as any[])
+    failures.set(`${j.part_id}|${j.colour}`, j.n);
 
   // Managed items below their minimum, furthest below (as a fraction of the minimum) first.
   const short = (db.prepare('SELECT * FROM store_items WHERE enabled = 1 AND in_store = 1 AND min_qty > 0').all() as any[])
@@ -183,9 +202,11 @@ export function plan(fleet: Fleet) {
           && (!n.colour || (p.filamentSource === 'manual' ? sp.colourName === n.colour : !!wantHex && sameColour(wantHex, sp.colour))));
         return ok ? null : 'filament does not match';
       };
-      const pick = free.find(p => !fits(p));
+      const failed = failures.get(`${n.partId}|${n.colour ?? ''}`) ?? 0;
+      const pick = failed >= 3 ? undefined : free.find(p => !fits(p));
       let reason: string | null = null;
       if (pick) free.splice(free.indexOf(pick), 1);
+      else if (failed >= 3) reason = `Failed ${failed} times in the last 24 h: check the printers and the file before it is tried again`;
       else if (!gcodeModels.get(n.partId)?.size) reason = 'No G-code uploaded for this part';
       else if (n.colour && !wantHex) reason = `Set a colour for “${n.colour}” in the colour table`;
       else if (!printers.some(p => p.model && gcodeModels.get(n.partId)!.has(p.model)))
@@ -209,6 +230,11 @@ export function plan(fleet: Fleet) {
   return { computedAt: Date.now(), dryRun: true, items, jobs, printers };
 }
 
+// Called after a printer becomes free and the store was re-read (phase 3 loads jobs then).
+let afterPrinterFree: () => void = () => {};
+export const setAfterPrinterFree = (fn: () => void) => { afterPrinterFree = fn; };
+const printerFree = () => syncStore('printer-free').then(() => afterPrinterFree()).catch(() => {});
+
 // ---------------------------------------------------------------------------
 // Events and routes
 
@@ -222,7 +248,7 @@ export function registerStoreJobs(app: FastifyInstance, fleet: Fleet) {
     if (b && !wasBusy.get(s.printerId) && settings(s.printerId).bedClear) saveSettings(s.printerId, { bed_clear: 0 });
     wasBusy.set(s.printerId, b);
     const ready = readiness(fleet, s, colourMap()).ready;
-    if (ready && wasReady.get(s.printerId) === false) syncStore('printer-free').catch(() => {});
+    if (ready && wasReady.get(s.printerId) === false) printerFree();
     wasReady.set(s.printerId, ready);
   });
 
@@ -237,7 +263,7 @@ export function registerStoreJobs(app: FastifyInstance, fleet: Fleet) {
     if (b.available !== undefined) saveSettings(id, { available: b.available ? 1 : 0 });
     if (b.manualMaterial !== undefined) saveSettings(id, { manual_material: String(b.manualMaterial).trim().slice(0, 30) });
     if (b.manualColour !== undefined) saveSettings(id, { manual_colour: String(b.manualColour).trim().slice(0, 60) });
-    if (b.available) syncStore('printer-free').catch(() => {});
+    if (b.available) printerFree();
     return printerOut(id);
   });
 
@@ -247,7 +273,7 @@ export function registerStoreJobs(app: FastifyInstance, fleet: Fleet) {
     if (busy(s)) return reply.code(409).send({ error: 'The printer is busy: the bed can only be cleared when nothing is printing.' });
     saveSettings(id, { bed_clear: 1, bed_clear_at: Date.now() });
     fleet.refreshSpools(id);
-    syncStore('printer-free').catch(() => {});
+    printerFree();
     return printerOut(id);
   });
 

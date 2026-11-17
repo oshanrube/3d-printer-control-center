@@ -99,3 +99,33 @@ export async function fetchCatalog(): Promise<StoreItem[]> {
   items.sort((a, b) => a.productId - b.productId || a.combinationId - b.combinationId);
   return items;
 }
+
+// ---------------------------------------------------------------------------
+// Stock writes (phase 3). Only `quantity` of one stock_available row is changed (PATCH).
+
+async function stockRow(productId: number, combinationId: number): Promise<{ id: number; quantity: number }> {
+  const rows = await get('stock_availables',
+    `[id,quantity]&filter[id_product]=[${productId}]&filter[id_product_attribute]=[${combinationId}]`);
+  if (rows.length !== 1) throw new Error(`store: expected 1 stock row for product ${productId}/${combinationId}, found ${rows.length}`);
+  return { id: Number(rows[0].id), quantity: parseInt(rows[0].quantity, 10) || 0 };
+}
+
+export async function readStock(productId: number, combinationId: number): Promise<number> {
+  return (await stockRow(productId, combinationId)).quantity;
+}
+
+/** Add `delta` to an item's stock in the store; returns { before, after } as read back from the store. */
+export async function addStock(productId: number, combinationId: number, delta: number): Promise<{ before: number; after: number }> {
+  if (!config.store.apiKey) throw new Error('STORE_API_KEY is not set');
+  const row = await stockRow(productId, combinationId);
+  const want = row.quantity + delta;
+  const body = `<?xml version="1.0" encoding="UTF-8"?><prestashop><stock_available><id>${row.id}</id><quantity>${want}</quantity></stock_available></prestashop>`;
+  const res = await fetch(`${config.store.url}/api/stock_availables/${row.id}`, {
+    method: 'PATCH', body, signal: AbortSignal.timeout(60_000),
+    headers: { 'Content-Type': 'application/xml', Authorization: `Basic ${Buffer.from(`${config.store.apiKey}:`).toString('base64')}` },
+  });
+  if (!res.ok) throw new Error(`store: stock update HTTP ${res.status} ${(await res.text()).slice(0, 200)}`);
+  const after = await readStock(productId, combinationId);
+  if (after !== want) throw new Error(`store: stock reads ${after} after setting ${want}`);
+  return { before: row.quantity, after };
+}
