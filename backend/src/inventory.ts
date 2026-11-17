@@ -48,6 +48,10 @@ db.exec(`INSERT INTO part_files (part_id, model, units_per_plate, filename, path
   FROM part_gcodes g LEFT JOIN parts p ON p.id = g.part_id`);
 db.exec(`DELETE FROM part_gcodes`);
 
+// Items whose store variant has no colour option get a colour chosen on the dashboard.
+if (!(db.prepare('PRAGMA table_info(store_items)').all() as any[]).some(c => c.name === 'default_colour'))
+  db.exec(`ALTER TABLE store_items ADD COLUMN default_colour TEXT NOT NULL DEFAULT ''`);
+
 /** Creality's model code (from the :9999 feed) -> the name slicers write as `printer_model`. */
 export const MODEL_NAMES: Record<string, string> = { K1C: 'K1C', K1: 'K1', F008: 'K2 Plus', K1MAX: 'K1 Max' };
 const modelName = (m: string) => MODEL_NAMES[m] || m;
@@ -117,6 +121,8 @@ function anyPrinterFree(fleet: Fleet): boolean {
 // Rows -> API objects
 
 const colourOf = (opts: StoreOption[]) => opts.find(o => /colou?r/i.test(o.group))?.value ?? null;
+/** The colour an item is printed in: its store colour option, else the one chosen on the dashboard. */
+export const itemColour = (opts: StoreOption[], defaultColour: string) => colourOf(opts) ?? (defaultColour || null);
 
 function itemsWithRecipes() {
   const recipes = db.prepare('SELECT * FROM recipes').all() as any[];
@@ -124,7 +130,8 @@ function itemsWithRecipes() {
     const options: StoreOption[] = JSON.parse(r.options_json || '[]');
     return {
       productId: r.product_id, combinationId: r.combination_id, reference: r.reference,
-      productName: r.product_name, options, colour: colourOf(options),
+      productName: r.product_name, options, colour: itemColour(options, r.default_colour),
+      colourFromStore: !!colourOf(options), defaultColour: r.default_colour,
       label: itemLabel({ productId: r.product_id, combinationId: r.combination_id, reference: r.reference,
         productName: r.product_name, options, quantity: r.store_qty }),
       storeQty: r.store_qty, inStore: !!r.in_store, enabled: !!r.enabled, minQty: r.min_qty, syncedAt: r.synced_at,
@@ -214,6 +221,8 @@ export function registerInventory(app: FastifyInstance, fleet: Fleet) {
     const row = db.prepare('SELECT 1 FROM store_items WHERE product_id = ? AND combination_id = ?').get(Number(pid), Number(cid));
     if (!row) return reply.code(404).send({ error: 'Unknown store item.' });
     if (b.enabled !== undefined) db.prepare('UPDATE store_items SET enabled = ? WHERE product_id = ? AND combination_id = ?').run(b.enabled ? 1 : 0, Number(pid), Number(cid));
+    if (b.defaultColour !== undefined)
+      db.prepare('UPDATE store_items SET default_colour = ? WHERE product_id = ? AND combination_id = ?').run(String(b.defaultColour).slice(0, 60), Number(pid), Number(cid));
     if (b.minQty !== undefined) {
       const q = int(b.minQty, 0, 10000); if (q === null) return reply.code(400).send({ error: 'minQty must be a number.' });
       db.prepare('UPDATE store_items SET min_qty = ? WHERE product_id = ? AND combination_id = ?').run(q, Number(pid), Number(cid));

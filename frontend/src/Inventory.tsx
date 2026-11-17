@@ -66,7 +66,7 @@ export function InventoryModal({ onClose }: { onClose: () => void }) {
           <button class={`btn btn-sm ${tab === 'colours' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setTab('colours')}>Colours</button>
           <button class={`btn btn-sm ${tab === 'queue' ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setTab('queue')}>Queue (dry run)</button>
         </div>
-        {tab === 'items' && <ItemsTab items={items} parts={parts} onItem={replaceItem} />}
+        {tab === 'items' && <ItemsTab items={items} parts={parts} onItem={replaceItem} colours={storeColours} />}
         {tab === 'parts' && <PartsTab parts={parts} models={models} onPart={replacePart} reload={loadParts} stock={stock} colours={storeColours} />}
         {tab === 'queue' && <QueueTab />}
         {tab === 'colours' && <ColourTable />}
@@ -77,7 +77,7 @@ export function InventoryModal({ onClose }: { onClose: () => void }) {
 
 // ---------------------------------------------------------------------------
 
-function ItemsTab({ items, parts, onItem }: { items: StoreItem[] | null; parts: Part[]; onItem: (i: StoreItem) => void }) {
+function ItemsTab({ items, parts, onItem, colours }: { items: StoreItem[] | null; parts: Part[]; onItem: (i: StoreItem) => void; colours: string[] }) {
   const [q, setQ] = useState('');
   const [onlyEnabled, setOnlyEnabled] = useState(false);
   const [open, setOpen] = useState<Set<number>>(new Set());
@@ -118,7 +118,7 @@ function ItemsTab({ items, parts, onItem }: { items: StoreItem[] | null; parts: 
                 </span>
               )}
             </div>
-            {isOpen && rows.map(i => <ItemRow key={`${i.productId}-${i.combinationId}`} item={i} parts={parts} onItem={onItem} />)}
+            {isOpen && rows.map(i => <ItemRow key={`${i.productId}-${i.combinationId}`} item={i} parts={parts} onItem={onItem} colours={colours} />)}
           </div>
         );
       })}
@@ -127,7 +127,7 @@ function ItemsTab({ items, parts, onItem }: { items: StoreItem[] | null; parts: 
   );
 }
 
-function ItemRow({ item: i, parts, onItem }: { item: StoreItem; parts: Part[]; onItem: (i: StoreItem) => void }) {
+function ItemRow({ item: i, parts, onItem, colours }: { item: StoreItem; parts: Part[]; onItem: (i: StoreItem) => void; colours: string[] }) {
   const [editing, setEditing] = useState(false);
   const [min, setMin] = useState(String(i.minQty));
   useEffect(() => setMin(String(i.minQty)), [i.minQty]);
@@ -144,11 +144,12 @@ function ItemRow({ item: i, parts, onItem }: { item: StoreItem; parts: Part[]; o
         <div class="muted">{i.options.map(o => o.value).join(' · ') || 'No variants'}</div>
         {i.enabled && (
           <div class={`muted ${i.recipe.length ? '' : 'inv-warn'}`}>
-            {i.recipe.length ? `Made of: ${recipe}` : '⚠️ No recipe yet: say which printed parts make one'}{' '}
+            {i.recipe.length ? `Made of: ${recipe}` : '⚠️ No recipe yet: say which printed parts make one'}
+            {i.recipe.length > 0 && !i.colourFromStore && (i.colour ? ` · printed in ${i.colour}` : ' · any colour')}{' '}
             <button class="chip" onClick={() => setEditing(!editing)}>{editing ? 'Close' : 'Edit recipe'}</button>
           </div>
         )}
-        {editing && <RecipeEditor item={i} parts={parts} onSaved={(u) => { onItem(u); setEditing(false); }} />}
+        {editing && <RecipeEditor item={i} parts={parts} colours={colours} onSaved={(u) => { onItem(u); setEditing(false); }} />}
       </div>
       <div class="inv-qty">
         <div class={short && i.enabled ? 'inv-warn' : ''} title="Stock in the store">{i.storeQty} <span class="muted">in store</span></div>
@@ -163,8 +164,9 @@ function ItemRow({ item: i, parts, onItem }: { item: StoreItem; parts: Part[]; o
   );
 }
 
-function RecipeEditor({ item, parts, onSaved }: { item: StoreItem; parts: Part[]; onSaved: (i: StoreItem) => void }) {
+function RecipeEditor({ item, parts, colours, onSaved }: { item: StoreItem; parts: Part[]; colours: string[]; onSaved: (i: StoreItem) => void }) {
   const [rows, setRows] = useState(item.recipe.map(r => ({ ...r })));
+  const [colour, setColour] = useState(item.defaultColour);
   const [add, setAdd] = useState('');
   const unused = parts.filter(p => !rows.some(r => r.partId === p.id));
   return (
@@ -187,7 +189,23 @@ function RecipeEditor({ item, parts, onSaved }: { item: StoreItem; parts: Part[]
           <button class="chip" disabled={!add} onClick={() => { setRows([...rows, { partId: Number(add), qty: 1 }]); setAdd(''); }}>Add</button>
         </div>
       )}
-      <button class="btn btn-sm btn-primary" onClick={() => api.setRecipe(item, rows.filter(r => r.qty > 0)).then(onSaved).catch(fail('Saving recipe'))}>Save recipe</button>
+      {item.colourFromStore
+        ? <p class="muted">Colour: <b>{item.colour}</b> (from the store variant)</p>
+        : (
+          <label class="muted">Print in{' '}
+            <select value={colour} onChange={(e: any) => setColour(e.currentTarget.value)}>
+              <option value="">Any colour (whatever is loaded)</option>
+              {colours.map(c => <option value={c}>{c}</option>)}
+            </select>
+            {' '}<span>This store item has no colour option, so choose it here.</span>
+          </label>
+        )}
+      <button class="btn btn-sm btn-primary" onClick={async () => {
+        try {
+          if (!item.colourFromStore && colour !== item.defaultColour) await api.updateItem(item, { defaultColour: colour });
+          onSaved(await api.setRecipe(item, rows.filter(r => r.qty > 0)));
+        } catch (e) { fail('Saving recipe')(e); }
+      }}>Save recipe</button>
     </div>
   );
 }
