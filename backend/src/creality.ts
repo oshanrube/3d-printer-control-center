@@ -45,6 +45,15 @@ export function describeFault(f: CrealityFault): string {
 const SILENCE_MS = 120_000;  // no messages this long -> assume a dead socket, reconnect
 const RETRY_MS = 15_000;
 
+/** A spool the printer knows about: its filament box slots (K2 CFS) and the external spool. */
+export interface Spool {
+  slot: string;          // "External", "CFS 1A" ...
+  material: string;      // "PLA", "ABS" ...
+  colour: string;        // "#rrggbb"
+  name: string;          // "Hyper PLA"
+}
+const SPOOL_REFRESH_MS = 5 * 60_000;
+
 export class CrealityClient extends EventEmitter {
   private ws?: WebSocket;
   private cache: any = {};
@@ -53,10 +62,43 @@ export class CrealityClient extends EventEmitter {
   private watchdog?: NodeJS.Timeout;
   private lastMsg = 0;
   status: VendorStatus | null = null;   // null = feed not connected / unknown
+  // Spools set on the printer (firmware 2.x K1/K1C and the K2 answer "get boxsInfo";
+  // 1.3.x K1C firmware doesn't). undefined = not asked yet, null = printer doesn't report.
+  spools: Spool[] | null | undefined = undefined;
+  spoolsAt = 0;
+  private spoolTimer?: NodeJS.Timeout;
+  private spoolProbe?: NodeJS.Timeout;
 
   constructor(public printer: Printer) { super(); }
 
   /** Switch the chamber light through Creality's service. False if the feed isn't connected. */
+  /** Ask the printer which spools are loaded (read-only request). */
+  refreshSpools(): boolean {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return false;
+    this.ws.send(JSON.stringify({ method: 'get', params: { boxsInfo: 1 } }));
+    clearTimeout(this.spoolProbe);
+    // No answer at all within 6 s: this firmware doesn't report spools.
+    if (this.spools === undefined) this.spoolProbe = setTimeout(() => { if (this.spools === undefined) { this.spools = null; this.emit('spools', null); } }, 6000);
+    return true;
+  }
+
+  private parseSpools(info: any) {
+    const out: Spool[] = [];
+    for (const box of Array.isArray(info?.materialBoxs) ? info.materialBoxs : []) {
+      const external = Number(box.type) === 1;
+      for (const m of Array.isArray(box.materials) ? box.materials : []) {
+        if (!m || !String(m.type || '').trim() || Number(m.state) <= 0) continue;   // empty slot
+        let colour = String(m.color || '').trim().toLowerCase();
+        if (/^#0[0-9a-f]{6}$/.test(colour)) colour = '#' + colour.slice(2);         // firmware writes "#0rrggbb"
+        out.push({ slot: external ? 'External' : `CFS ${box.id}${'ABCD'[Number(m.id)] ?? m.id}`,
+          material: String(m.type).trim(), colour, name: String(m.name || '').trim() });
+      }
+    }
+    this.spools = out; this.spoolsAt = Date.now();
+    clearTimeout(this.spoolProbe);
+    this.emit('spools', out);
+  }
+
   setLight(on: boolean): boolean {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return false;
     this.ws.send(JSON.stringify({ method: 'set', params: { lightSw: on ? 1 : 0 } }));
@@ -77,6 +119,7 @@ export class CrealityClient extends EventEmitter {
     this.stopped = true;
     if (this.retry) clearTimeout(this.retry);
     if (this.watchdog) clearInterval(this.watchdog);
+    clearInterval(this.spoolTimer); clearTimeout(this.spoolProbe);
     try { this.ws?.terminate(); } catch { /* ignore */ }
   }
 
@@ -84,12 +127,18 @@ export class CrealityClient extends EventEmitter {
     if (this.stopped) return;
     const ws = new WebSocket(`ws://${this.host()}:9999`, { handshakeTimeout: 8000 });
     this.ws = ws;
-    ws.on('open', () => { this.cache = {}; this.lastMsg = Date.now(); });
+    ws.on('open', () => {
+      this.cache = {}; this.lastMsg = Date.now();
+      setTimeout(() => this.refreshSpools(), 1500);
+      clearInterval(this.spoolTimer);
+      this.spoolTimer = setInterval(() => { if (this.spools !== null) this.refreshSpools(); }, SPOOL_REFRESH_MS);
+    });
     ws.on('message', (data) => {
       this.lastMsg = Date.now();
       let msg: any;
       try { msg = JSON.parse(data.toString()); } catch { return; }
       if (!msg || typeof msg !== 'object') return;
+      if (msg.boxsInfo) { this.parseSpools(msg.boxsInfo); delete msg.boxsInfo; }
       Object.assign(this.cache, msg);
       if ('err' in msg || 'state' in msg || 'deviceState' in msg || 'model' in msg || 'printFileName' in msg || !this.status) this.publish();
     });

@@ -272,6 +272,7 @@ export function registerInventory(app: FastifyInstance, fleet: Fleet) {
     }
     try { rmSync(join(LIBRARY, `part-${id}`), { recursive: true, force: true }); } catch { /* ignore */ }
     db.prepare('DELETE FROM part_gcodes WHERE part_id = ?').run(id);
+    db.prepare('DELETE FROM part_stock WHERE part_id = ?').run(id);
     db.prepare('DELETE FROM parts WHERE id = ?').run(id);
     return { ok: true };
   });

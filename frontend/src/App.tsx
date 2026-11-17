@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from 'preact/hooks';
 import { createPortal } from 'preact/compat';
 import { api, FAILURE_REASONS, type Printer, type PrinterEvent, type StoppedPrint } from './api';
 import { InventoryModal } from './Inventory';
+import { StoreJobStrip } from './StoreJobs';
+import type { PrinterReadiness } from './api';
 import { useStore } from './store';
 import { enablePush, pushStatus } from './push';
 
@@ -98,9 +100,10 @@ function Camera({ printer }: { printer: Printer }) {
 }
 
 /* ---------- printer card ---------- */
-function PrinterCard({ printer, onEdit, toLabel, onLabelled, onLater }: {
+function PrinterCard({ printer, onEdit, toLabel, onLabelled, onLater, job, storeColours, onJob }: {
   printer: Printer; onEdit: (p: Printer) => void;
   toLabel?: StoppedPrint; onLabelled: () => void; onLater: (id: number) => void;
+  job?: PrinterReadiness; storeColours: string[]; onJob: () => void;
 }) {
   const s = printer.live;
   // While the firmware warms up / calibrates for a new print, Klipper still reports the
@@ -203,6 +206,7 @@ function PrinterCard({ printer, onEdit, toLabel, onLabelled, onLater }: {
           <button class="btn btn-sm btn-danger" onClick={() => act('cancel')}>🛑 Cancel</button>
         </div>
       )}
+      {job && s?.online && <StoreJobStrip r={job} storeColours={storeColours} onChange={onJob} />}
     </div>
   );
 }
@@ -526,6 +530,15 @@ export function App() {
     sync(); document.addEventListener('visibilitychange', sync);
     return () => document.removeEventListener('visibilitychange', sync);
   }, []);
+  // Store jobs: each printer's readiness (refreshed every 30 s while visible, and after changes).
+  const [jobs, setJobs] = useState<Record<number, PrinterReadiness>>({});
+  const [storeColours, setStoreColours] = useState<string[]>([]);
+  const loadJobs = () => api.plan().then(p => setJobs(Object.fromEntries(p.printers.map(r => [r.id, r])))).catch(() => {});
+  useEffect(() => {
+    loadJobs(); api.colours().then(c => setStoreColours(c.storeColours)).catch(() => {});
+    const t = setInterval(() => { if (!document.hidden) loadJobs(); }, 30_000);
+    return () => clearInterval(t);
+  }, []);
   const [push, setPush] = useState(pushStatus());
   const [theme, setTheme] = useState(document.documentElement.getAttribute('data-theme') || 'dark');
 
@@ -591,7 +604,8 @@ export function App() {
         {printers.length === 0 && <p class="muted" style="text-align:center;padding:40px">No printers yet. Click Add or Scan.</p>}
         <div class="grid">
           {sorted.map((p) => <PrinterCard key={p.id} printer={p} onEdit={(pr) => setModal({ kind: 'printer', p: pr })}
-            toLabel={newestToLabel(p.id)} onLabelled={loadLabels} onLater={(id) => setLater(new Set([...later, id]))} />)}
+            toLabel={newestToLabel(p.id)} onLabelled={loadLabels} onLater={(id) => setLater(new Set([...later, id]))}
+            job={jobs[p.id]} storeColours={storeColours} onJob={loadJobs} />)}
         </div>
 
         {events.length > 0 && (
@@ -612,7 +626,7 @@ export function App() {
       {modal?.kind === 'printer' && <PrinterModal printer={modal.p} onClose={() => setModal(null)} />}
       {modal?.kind === 'scan' && <ScanModal printers={printers} onClose={() => setModal(null)} />}
       {modal?.kind === 'labels' && <LabelModal onClose={() => setModal(null)} onChanged={loadLabels} />}
-      {modal?.kind === 'inventory' && <InventoryModal onClose={() => setModal(null)} />}
+      {modal?.kind === 'inventory' && <InventoryModal onClose={() => { setModal(null); loadJobs(); }} />}
     </div>
   );
 }

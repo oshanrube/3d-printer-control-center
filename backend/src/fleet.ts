@@ -238,6 +238,11 @@ export class Fleet extends EventEmitter {
   }
 
   /** Printer model as reported by Creality's firmware feed (e.g. "K1C", "F008"), if known. */
+  /** Spools set on the printer: undefined = not known yet, null = this firmware doesn't report them. */
+  spools(id: number) { return this.entries.get(id)?.vendor.spools; }
+  refreshSpools(id: number) { return this.entries.get(id)?.vendor.refreshSpools() ?? false; }
+  vendor(id: number) { return this.entries.get(id)?.vendor; }
+
   model(id: number): string | null {
     return this.entries.get(id)?.vendor.status?.model || null;
   }

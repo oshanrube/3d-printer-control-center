@@ -38,6 +38,20 @@ export interface PartGcode {
   meta: { printerModel?: string; filamentType?: string; filamentColour?: string; printTime?: string; warnings: string[] };
 }
 export interface Part { id: number; name: string; unitsPerPlate: number; material: string; onHand: number; notes: string; gcodes: PartGcode[] }
+export interface Spool { slot: string; material: string; colour: string; name: string; colourName: string | null }
+export interface PrinterReadiness {
+  id: number; name: string; model: string | null; modelName: string | null; state: string; online: boolean;
+  available: boolean; bedClear: boolean; ready: boolean; why: string | null;
+  filamentSource: 'printer' | 'manual' | 'none'; spools: Spool[]; manualMaterial: string; manualColour: string;
+}
+export interface PlannedJob {
+  partId: number; part: string; colour: string | null; material: string; unitsPerPlate: number;
+  forItems: string[]; printer: { id: number; name: string } | null; reason: string | null;
+}
+export interface Plan {
+  computedAt: number; dryRun: boolean; printers: PrinterReadiness[]; jobs: PlannedJob[];
+  items: { reference: string; label: string; storeQty: number; minQty: number; short: number; colour: string | null; problems: string[] }[];
+}
 export interface PrinterModel { model: string; name: string; printers: string[] }
 
 export interface StoppedPrint {
@@ -112,6 +126,15 @@ export const api = {
     j<Part>(`/api/parts/${id}/gcode/${model}`, { method: 'PUT', body: file,
       headers: { 'Content-Type': 'application/octet-stream', 'X-Filename': encodeURIComponent(file.name) } }),
   deleteGcode: (id: number, model: string) => j<Part>(`/api/parts/${id}/gcode/${model}`, { method: 'DELETE' }),
+  plan: () => j<Plan>('/api/store/plan'),
+  printerJobs: (id: number, patch: { available?: boolean; manualMaterial?: string; manualColour?: string }) =>
+    j<PrinterReadiness>(`/api/store/printers/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+  bedCleared: (id: number) => j<PrinterReadiness>(`/api/store/printers/${id}/bed-cleared`, { method: 'POST' }),
+  refreshFilament: (id: number) => j<PrinterReadiness>(`/api/store/printers/${id}/refresh-filament`, { method: 'POST' }),
+  colours: () => j<{ map: Record<string, string>; storeColours: string[] }>('/api/store/colours'),
+  setColours: (map: Record<string, string>) => j<{ map: Record<string, string>; storeColours: string[] }>('/api/store/colours', { method: 'PUT', body: JSON.stringify({ map }) }),
+  partStock: () => j<{ partId: number; colour: string; qty: number }[]>('/api/parts/stock'),
+  setPartStock: (id: number, colour: string, qty: number) => j(`/api/parts/${id}/stock`, { method: 'PUT', body: JSON.stringify({ colour, qty }) }),
   snapshotUrl: (id: number) => `/api/camera/${id}/snapshot`,
   unlabelled: () => j<StoppedPrint[]>('/api/prints/unlabelled'),
   finished: () => j<StoppedPrint[]>('/api/prints/finished'),
