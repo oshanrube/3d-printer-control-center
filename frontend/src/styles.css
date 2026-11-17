@@ -353,3 +353,11 @@ code.ref { font-size: .78rem; color: var(--text-dim); }
   .inv-toolbar .inv-search { max-width: none; }
   .switch-row { min-width: 0; width: 100%; }
 }
+.pill-out { background: color-mix(in srgb, var(--st-offline) 16%, transparent); color: var(--st-offline); }
+.pill-high { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); }
+.pill-next { background: var(--accent); color: #fff; margin-left: 0; }
+.inv-table tr.next td { background: color-mix(in srgb, var(--accent) 7%, transparent); }
+.tile2.bad .n { color: var(--st-offline); }
+select.prio { font: inherit; font-size: .8rem; padding: 3px 6px; border-radius: 7px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text); }
+select.prio-1 { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+select.prio--1 { color: var(--text-dim); }

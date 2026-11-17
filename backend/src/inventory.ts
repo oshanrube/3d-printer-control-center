@@ -49,6 +49,8 @@ db.exec(`INSERT INTO part_files (part_id, model, units_per_plate, filename, path
 db.exec(`DELETE FROM part_gcodes`);
 
 // Items whose store variant has no colour option get a colour chosen on the dashboard.
+if (!(db.prepare('PRAGMA table_info(store_items)').all() as any[]).some(c => c.name === 'priority'))
+  db.exec(`ALTER TABLE store_items ADD COLUMN priority INTEGER NOT NULL DEFAULT 0`);   // 1 high, 0 normal, -1 low
 if (!(db.prepare('PRAGMA table_info(store_items)').all() as any[]).some(c => c.name === 'default_colour'))
   db.exec(`ALTER TABLE store_items ADD COLUMN default_colour TEXT NOT NULL DEFAULT ''`);
 
@@ -142,7 +144,7 @@ function itemsWithRecipes() {
       ignoreStoreColour: ignoresStoreColour(r.product_id), defaultColour: r.default_colour,
       label: itemLabel({ productId: r.product_id, combinationId: r.combination_id, reference: r.reference,
         productName: r.product_name, options, quantity: r.store_qty }),
-      storeQty: r.store_qty, inStore: !!r.in_store, enabled: !!r.enabled, minQty: r.min_qty, syncedAt: r.synced_at,
+      storeQty: r.store_qty, inStore: !!r.in_store, enabled: !!r.enabled, minQty: r.min_qty, priority: r.priority ?? 0, syncedAt: r.synced_at,
       recipe: recipes.filter(x => x.product_id === r.product_id && x.combination_id === r.combination_id)
         .map(x => ({ partId: x.part_id, qty: x.qty })),
     };
@@ -231,6 +233,10 @@ export function registerInventory(app: FastifyInstance, fleet: Fleet) {
     if (b.enabled !== undefined) db.prepare('UPDATE store_items SET enabled = ? WHERE product_id = ? AND combination_id = ?').run(b.enabled ? 1 : 0, Number(pid), Number(cid));
     if (b.defaultColour !== undefined)
       db.prepare('UPDATE store_items SET default_colour = ? WHERE product_id = ? AND combination_id = ?').run(String(b.defaultColour).slice(0, 60), Number(pid), Number(cid));
+    if (b.priority !== undefined) {
+      const pr = Math.max(-1, Math.min(1, Math.round(Number(b.priority)) || 0));
+      db.prepare('UPDATE store_items SET priority = ? WHERE product_id = ? AND combination_id = ?').run(pr, Number(pid), Number(cid));
+    }
     if (b.minQty !== undefined) {
       const q = int(b.minQty, 0, 10000); if (q === null) return reply.code(400).send({ error: 'minQty must be a number.' });
       db.prepare('UPDATE store_items SET min_qty = ? WHERE product_id = ? AND combination_id = ?').run(q, Number(pid), Number(cid));

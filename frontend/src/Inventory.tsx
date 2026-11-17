@@ -95,6 +95,16 @@ export function InventoryPage({ tab }: { tab: InventoryTab }) {
 // ---------------------------------------------------------------------------
 // Store items
 
+const PRIORITIES: [number, string][] = [[1, 'High'], [0, 'Normal'], [-1, 'Low']];
+function PrioritySelect({ value, onChange }: { value: number; onChange: (v: number) => void }) {
+  return (
+    <select class={`prio prio-${value}`} value={String(value)} title="Print priority"
+      onChange={(e: any) => onChange(Number(e.currentTarget.value))}>
+      {PRIORITIES.map(([v, l]) => <option value={String(v)}>{l}</option>)}
+    </select>
+  );
+}
+
 type ItemFilter = 'all' | 'managed' | 'short' | 'norecipe';
 
 function ItemsTab({ items, parts, onItem, colours }: { items: StoreItem[] | null; parts: Part[]; onItem: (i: StoreItem) => void; colours: string[] }) {
@@ -156,7 +166,7 @@ function ItemsTab({ items, parts, onItem, colours }: { items: StoreItem[] | null
             {isOpen && (
               <div class="table-wrap">
                 <table class="inv-table">
-                  <thead><tr><th class="c-check" /><th>Variant</th><th>Reference</th><th class="c-num">Stock / min</th><th>Recipe</th><th /></tr></thead>
+                  <thead><tr><th class="c-check" /><th>Variant</th><th>Reference</th><th class="c-num">Stock / min</th><th>Priority</th><th>Recipe</th><th /></tr></thead>
                   <tbody>{rows.map(i => <ItemRow key={`${i.productId}-${i.combinationId}`} item={i} parts={parts} onItem={onItem} colours={colours} />)}</tbody>
                 </table>
               </div>
@@ -187,9 +197,10 @@ function ItemRow({ item: i, parts, onItem, colours }: { item: StoreItem; parts: 
           <span class={`stock ${short ? 'short' : ''}`}>{i.storeQty}</span>
           {i.enabled
             ? <> / <EditField type="number" min={0} class="inv-num" value={i.minQty} onSave={v => api.updateItem(i, { minQty: Number(v) || 0 }).then(onItem).catch(fail('Saving'))} />
-                {short && <span class="pill pill-warn">−{i.minQty - i.storeQty}</span>}</>
+                {short && <span class={`pill ${i.storeQty <= 0 ? 'pill-out' : 'pill-warn'}`}>{i.storeQty <= 0 ? 'out' : `−${i.minQty - i.storeQty}`}</span>}</>
             : null}
         </td>
+        <td>{i.enabled && <PrioritySelect value={i.priority} onChange={v => api.updateItem(i, { priority: v }).then(onItem).catch(fail('Saving'))} />}</td>
         <td>
           {i.enabled && (i.recipe.length
             ? <div class="opts">{i.recipe.map(r => <span class="opt part">{r.qty}× {partName(r.partId)}</span>)}
@@ -199,7 +210,7 @@ function ItemRow({ item: i, parts, onItem, colours }: { item: StoreItem; parts: 
         <td class="c-act">{i.enabled && <button class="chip" onClick={() => setEditing(!editing)}>{editing ? 'Close' : 'Edit'}</button>}</td>
       </tr>
       {editing && (
-        <tr class="editor-row"><td /><td colSpan={5}>
+        <tr class="editor-row"><td /><td colSpan={6}>
           <RecipeEditor item={i} parts={parts} colours={colours} onSaved={(u) => { onItem(u); setEditing(false); }} />
         </td></tr>
       )}
@@ -370,38 +381,46 @@ function QueueTab() {
   useEffect(() => { load(); }, []);
   if (!plan) return <p class="muted">Working out the plan…</p>;
   const ready = plan.printers.filter(p => p.ready).map(p => p.name);
-  // Group plates by part + colour: one row each, with where they'd go or why not.
-  const groups = new Map<string, { part: string; colour: string | null; material: string; plates: number; units: number; to: Map<string, number>; reasons: Map<string, number>; forItems: Set<string> }>();
-  for (const j of plan.jobs) {
-    const k = `${j.part}|${j.colour ?? ''}`;
-    if (!groups.has(k)) groups.set(k, { part: j.part, colour: j.colour, material: j.material, plates: 0, units: 0, to: new Map(), reasons: new Map(), forItems: new Set() });
-    const g = groups.get(k)!; g.plates++; g.units += j.unitsPerPlate; j.forItems.forEach(x => g.forItems.add(x));
-    if (j.printer) g.to.set(j.printer.name, (g.to.get(j.printer.name) ?? 0) + 1);
-    else if (j.reason) g.reasons.set(j.reason, (g.reasons.get(j.reason) ?? 0) + 1);
-  }
+  const setPrio = (i: Plan['items'][number], v: number) => api.updateItem(i, { priority: v }).then(load).catch(fail('Saving'));
+  // Print order: consecutive identical plates collapse into one numbered row (#2–4).
+  type Row = { from: number; to: number; j: Plan['jobs'][number] };
+  const rows: Row[] = [];
+  plan.jobs.forEach((j, k) => {
+    const last = rows[rows.length - 1];
+    const same = last && last.j.partId === j.partId && last.j.colour === j.colour && last.j.stage === j.stage
+      && last.j.unitsPerPlate === j.unitsPerPlate && last.j.priority === j.priority
+      && (last.j.printer?.id ?? null) === (j.printer?.id ?? null) && last.j.reason === j.reason && !j.printer;
+    if (same) last.to = k + 1; else rows.push({ from: k + 1, to: k + 1, j });
+  });
+  const outN = plan.items.filter(i => i.outOfStock).length;
   return (
     <>
       <div class="tiles">
+        <div class={`tile2 ${outN ? 'bad' : ''}`}><span class="n">{outN}</span><span class="l">out of stock</span></div>
         <div class="tile2"><span class="n">{plan.items.length}</span><span class="l">items below minimum</span></div>
         <div class="tile2"><span class="n">{plan.jobs.length}</span><span class="l">plates to print</span></div>
         <div class={`tile2 ${ready.length ? 'good' : ''}`}><span class="n">{ready.length}</span><span class="l">{ready.length ? `ready: ${ready.join(', ')}` : 'printers ready'}</span></div>
         <button class="chip" onClick={load}>↻ Refresh</button>
       </div>
-      <p class="inv-hint-line">Printers only get plates when <b>Auto-load</b> is on (Jobs tab), with Store jobs ticked and the bed confirmed clear on the printer card.</p>
+      <p class="inv-hint-line">Print order: <b>High</b> priority first, then one of each <b>out-of-stock</b> item, then the rest up to the minimum (furthest below first). Free printers take plates from the top. Printers only get plates when <b>Auto-load</b> is on (Jobs tab).</p>
 
-      <h3 class="inv-h3">Plates</h3>
-      {!groups.size ? <p class="muted">Nothing to print.</p> : (
+      <h3 class="inv-h3">Print order</h3>
+      {!rows.length ? <p class="muted">Nothing to print.</p> : (
         <div class="table-wrap"><table class="inv-table">
-          <thead><tr><th>Part</th><th>Filament</th><th class="c-num">Plates</th><th class="c-num">Units</th><th>Where / why not</th></tr></thead>
-          <tbody>{[...groups.values()].map(g => (
-            <tr title={`For ${[...g.forItems].join(', ')}`}>
-              <td><b>{g.part}</b></td>
-              <td><span class={`opt colour ${g.colour ? '' : 'any'}`}>{[g.material, g.colour || 'any colour'].filter(Boolean).join(' ')}</span></td>
-              <td class="c-num">{g.plates}</td><td class="c-num">{g.units}</td>
+          <thead><tr><th class="c-num">#</th><th>Part</th><th>Filament</th><th class="c-num">Units</th><th>Why</th><th>Where / waiting for</th></tr></thead>
+          <tbody>{rows.map((r, k) => (
+            <tr key={k} class={k === 0 ? 'next' : ''} title={`For ${r.j.forItems.join(', ')}`}>
+              <td class="c-num">{k === 0 ? <span class="pill pill-next">Next</span> : <span class="muted">{r.from === r.to ? r.from : `${r.from}–${r.to}`}</span>}</td>
+              <td><b>{r.j.part}</b>{r.to > r.from && <span class="muted small"> × {r.to - r.from + 1} plates</span>}
+                <div class="muted small">for {r.j.forItems.join(', ')}</div></td>
+              <td><span class={`opt colour ${r.j.colour ? '' : 'any'}`}>{[r.j.material, r.j.colour || 'any colour'].filter(Boolean).join(' ')}</span></td>
+              <td class="c-num">{r.j.unitsPerPlate * (r.to - r.from + 1)}</td>
               <td>
-                {[...g.to].map(([pr, n]) => <div class="go">→ {pr}{n > 1 ? ` (${n})` : ''}</div>)}
-                {[...g.reasons].map(([r, n]) => <div class="why muted small">{n > 1 ? `${n}× ` : ''}{r}</div>)}
+                {r.j.priority > 0 && <span class="pill pill-high">High</span>}
+                {r.j.priority < 0 && <span class="pill">Low</span>}
+                {r.j.stage === 'out' ? <span class="pill pill-out">Out of stock</span> : <span class="pill pill-warn">Below min</span>}
               </td>
+              <td>{r.j.printer ? <span class="go">→ {r.j.printer.name}</span> : <span class="why muted small">{r.j.reason}</span>}</td>
             </tr>
           ))}</tbody>
         </table></div>
@@ -410,10 +429,12 @@ function QueueTab() {
       <h3 class="inv-h3">Below minimum</h3>
       {!plan.items.length ? <p class="muted">Every managed item is at or above its minimum.</p> : (
         <div class="table-wrap"><table class="inv-table">
-          <thead><tr><th>Reference</th><th class="c-num">In store</th><th class="c-num">Min</th><th class="c-num">Short</th><th /></tr></thead>
+          <thead><tr><th>Reference</th><th class="c-num">In store</th><th class="c-num">Min</th><th class="c-num">Short</th><th>Priority</th><th /></tr></thead>
           <tbody>{plan.items.map(i => (
-            <tr><td><code class="ref">{i.reference}</code></td><td class="c-num">{i.storeQty}</td><td class="c-num">{i.minQty}</td>
+            <tr key={`${i.productId}-${i.combinationId}`}><td><code class="ref">{i.reference}</code></td>
+              <td class="c-num">{i.outOfStock ? <span class="pill pill-out">0</span> : i.storeQty}</td><td class="c-num">{i.minQty}</td>
               <td class="c-num"><span class="pill pill-warn">{i.short}</span></td>
+              <td><PrioritySelect value={i.priority} onChange={v => setPrio(i, v)} /></td>
               <td>{i.problems.length > 0 && <span class="inv-warn small">⚠️ {i.problems.join(', ')}</span>}</td></tr>
           ))}</tbody>
         </table></div>

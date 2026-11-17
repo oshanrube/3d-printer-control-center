@@ -127,6 +127,8 @@ export interface PlannedJob {
   partId: number; part: string; colour: string | null; material: string; unitsPerPlate: number;
   file: { id: number; filename: string; model: string } | null;   // the G-code this plate would use
   forItems: string[]; printer: { id: number; name: string } | null; reason: string | null;
+  stage: 'out' | 'min';   // 'out': first unit of an out-of-stock item; 'min': filling up to the minimum
+  priority: number;       // 1 high, 0 normal, -1 low
 }
 
 interface PartFile { id: number; model: string; units: number; filename: string }
@@ -175,42 +177,65 @@ export function plan(fleet: Fleet) {
   for (const j of db.prepare(`SELECT part_id, colour, COUNT(*) n FROM store_jobs WHERE status = 'failed' AND ended_at > ? GROUP BY part_id, colour`).all(Date.now() - 86400e3) as any[])
     failures.set(`${j.part_id}|${j.colour}`, j.n);
 
-  // Managed items below their minimum, furthest below (as a fraction of the minimum) first.
+  // Managed items below their minimum. Print order (owner, 2026-11-17): the item's priority
+  // (High / Normal / Low) first; within it, the first unit of every out-of-stock item before
+  // anything that only fills up to the minimum; then furthest below (fraction of the minimum).
   const short = (db.prepare('SELECT * FROM store_items WHERE enabled = 1 AND in_store = 1 AND min_qty > 0').all() as any[])
     .map(r => {
       const options: StoreOption[] = JSON.parse(r.options_json || '[]');
       const label = `${r.reference || r.product_name}`;
       const recipe = recipes.filter(x => x.product_id === r.product_id && x.combination_id === r.combination_id);
-      return { r, label, colour: itemColour(options, r.default_colour, r.product_id), recipe,
-        short: Math.max(0, r.min_qty - r.store_qty), fraction: (r.min_qty - r.store_qty) / r.min_qty };
+      return { r, label, colour: itemColour(options, r.default_colour, r.product_id), recipe, priority: Number(r.priority) || 0,
+        out: r.store_qty <= 0, short: Math.max(0, r.min_qty - r.store_qty), fraction: (r.min_qty - r.store_qty) / r.min_qty };
     })
     .filter(x => x.short > 0)
-    .sort((a, b) => b.fraction - a.fraction);
+    .sort((a, b) => b.priority - a.priority || Number(b.out) - Number(a.out) || b.fraction - a.fraction);
 
-  // Parts needed per (part, colour), taking spare parts on hand first, in priority order.
-  const need = new Map<string, { partId: number; colour: string | null; qty: number; forItems: string[] }>();
-  const items = short.map(x => {
-    const problems: string[] = [];
-    if (!x.recipe.length) problems.push('no recipe');
-    for (const line of x.recipe) {
-      const part = parts.get(line.part_id); if (!part) continue;
-      const key = `${line.part_id}|${x.colour ?? ''}`;
-      let qty = line.qty * x.short;
-      qty -= takeParts(onHand, line.part_id, x.colour, qty).taken;   // spares and plates on their way first
+  // Demands: an out-of-stock item's first set (stage 'out'), then the rest up to its minimum ('min').
+  type Stage = 'out' | 'min';
+  const demands: { x: typeof short[number]; stage: Stage; sets: number }[] = [];
+  for (const x of short) {
+    const first = x.out ? 1 : 0;
+    if (first) demands.push({ x, stage: 'out', sets: first });
+    if (x.short - first > 0) demands.push({ x, stage: 'min', sets: x.short - first });
+  }
+  demands.sort((a, b) => b.x.priority - a.x.priority || (a.stage === b.stage ? 0 : a.stage === 'out' ? -1 : 1)
+    || Number(b.x.out) - Number(a.x.out) || b.x.fraction - a.x.fraction);
+
+  // Parts needed per (part, colour, priority, stage), in that order, taking spare parts on hand first.
+  const need = new Map<string, { partId: number; colour: string | null; qty: number; forItems: string[]; stage: Stage; priority: number }>();
+  for (const d of demands) {
+    for (const line of d.x.recipe) {
+      if (!parts.get(line.part_id)) continue;
+      let qty = line.qty * d.sets;
+      qty -= takeParts(onHand, line.part_id, d.x.colour, qty).taken;   // spares and plates on their way first
       if (!qty) continue;
-      if (!need.has(key)) need.set(key, { partId: line.part_id, colour: x.colour, qty: 0, forItems: [] });
-      const n = need.get(key)!; n.qty += qty; if (!n.forItems.includes(x.label)) n.forItems.push(x.label);
+      const key = `${line.part_id}|${d.x.colour ?? ''}|${d.x.priority}|${d.stage}`;
+      if (!need.has(key)) need.set(key, { partId: line.part_id, colour: d.x.colour, qty: 0, forItems: [], stage: d.stage, priority: d.x.priority });
+      const n = need.get(key)!; n.qty += qty; if (!n.forItems.includes(d.x.label)) n.forItems.push(d.x.label);
     }
-    return { reference: x.r.reference, label: x.label, storeQty: x.r.store_qty, minQty: x.r.min_qty, short: x.short, colour: x.colour, problems };
-  });
+  }
+  const items = short.map(x => ({
+    productId: x.r.product_id, combinationId: x.r.combination_id,
+    reference: x.r.reference, label: x.label, storeQty: x.r.store_qty, minQty: x.r.min_qty, short: x.short, colour: x.colour,
+    priority: x.priority, outOfStock: x.out, problems: x.recipe.length ? [] : ['no recipe'],
+  }));
 
-  // Plates, then a printer for each (one plate per printer), in priority order.
+  // Plates, then a printer for each (one plate per printer), in print order. A plate's layout is
+  // chosen against everything still needed of that part + colour (so a 3-up still gets used), and
+  // extra units from an early plate count towards the later needs.
+  const totalLeft = new Map<string, number>();
+  for (const n of need.values()) { const k = `${n.partId}|${n.colour ?? ''}`; totalLeft.set(k, (totalLeft.get(k) ?? 0) + n.qty); }
+  const surplus = new Map<string, number>();
   const free = printers.filter(p => p.ready);
   const jobs: PlannedJob[] = [];
   for (const n of need.values()) {
     const part = parts.get(n.partId)!;
     const files = filesOf.get(n.partId) ?? [];
-    let remaining = n.qty;
+    const pc = `${n.partId}|${n.colour ?? ''}`;
+    const extra = Math.min(surplus.get(pc) ?? 0, n.qty);
+    surplus.set(pc, (surplus.get(pc) ?? 0) - extra);   // already taken off totalLeft when that plate was planned
+    let remaining = n.qty - extra;
     while (remaining > 0) {
       const wantHex = n.colour ? colours[n.colour] : undefined;
       const fits = (p: PrinterReadiness) => {
@@ -236,13 +261,15 @@ export function plan(fleet: Fleet) {
           : `No ${compatible.map(p => p.modelName).filter((v, k, a) => a.indexOf(v) === k).join('/')} printer has ${[part.material, n.colour].filter(Boolean).join(' ') || 'the filament'} loaded`;
       }
       // The printer's model decides which files can be used; without a printer, plan with any file.
-      const file = bestFile(pick ? files.filter(f => f.model === pick.model) : files, remaining);
+      const left = Math.max(remaining, totalLeft.get(pc) ?? remaining);
+      const file = bestFile(pick ? files.filter(f => f.model === pick.model) : files, left);
       const units = file?.units ?? remaining;   // no file at all: one line for the whole amount
-      remaining -= units;
+      remaining -= units; totalLeft.set(pc, (totalLeft.get(pc) ?? 0) - units);
       jobs.push({ partId: n.partId, part: part.name, colour: n.colour, material: part.material, unitsPerPlate: units,
         file: file ? { id: file.id, filename: file.filename, model: file.model } : null,
-        forItems: n.forItems, printer: pick ? { id: pick.id, name: pick.name } : null, reason });
+        forItems: n.forItems, printer: pick ? { id: pick.id, name: pick.name } : null, reason, stage: n.stage, priority: n.priority });
     }
+    if (remaining < 0) surplus.set(pc, (surplus.get(pc) ?? 0) - remaining);
   }
   return { computedAt: Date.now(), dryRun: true, items, jobs, printers };
 }
