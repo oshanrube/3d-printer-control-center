@@ -57,6 +57,10 @@ function munge(offer, answer){
   const useWc=useKf && typeof VideoDecoder==='function';
   function codecOf(d){for(let i=0;i+6<d.length;i++){if(d[i]===0&&d[i+1]===0&&d[i+2]===1&&(d[i+3]&31)===7){const h=function(x){return (x<16?'0':'')+x.toString(16);};return 'avc1.'+h(d[i+4])+h(d[i+5])+h(d[i+6]);}}return null;}
   const pc=new RTCPeerConnection(useKf?{encodedInsertableStreams:true}:{});
+  // Diagnostics, read by Node when the page is restarted (window.__diag()).
+  const st={mode:useWc?'webcodecs':useKf?'keyframes':'full',enc:0,key:0,dec:0,derr:'',codec:''};
+  window.__diag=async function(){let rtp=null;try{(await pc.getStats()).forEach(function(r){if(r.type==='inbound-rtp'&&r.kind==='video')rtp={bytes:r.bytesReceived,packets:r.packetsReceived,lost:r.packetsLost,frames:r.framesReceived,decoded:r.framesDecoded,keyframes:r.keyFramesDecoded,codec:r.codecId};});}catch(e){}
+    return {conn:pc.connectionState,ice:pc.iceConnectionState,st:st,rtp:rtp};};
   const tr=pc.addTransceiver('video',{direction:'recvonly'});
   try{const h=RTCRtpReceiver.getCapabilities('video').codecs.filter(c=>/H264/i.test(c.mimeType));if(h.length&&tr.setCodecPreferences)tr.setCodecPreferences(h);}catch(e){}
   if(useKf && !useWc){
@@ -73,16 +77,17 @@ function munge(offer, answer){
       if(c.width!==w){c.width=w;c.height=hh;} ctx.drawImage(vf,0,0,w,hh);
       const d=c.toDataURL('image/jpeg',0.6); if(window.__frame) window.__frame(d.slice(d.indexOf(',')+1));};
     s.readable.pipeTo(new WritableStream({write(f){
+      st.enc++; if(f.type==='key') st.key++;
       if(f.type!=='key'||busy) return;          // keyframes only; skip one while the last is still decoding
       const data=new Uint8Array(f.data), codec=codecOf(data);
       if(!dec||(codec&&codec!==cfg)){
         try{if(dec)dec.close();}catch(e){}
-        cfg=codec||'avc1.640028';
-        dec=new VideoDecoder({output:function(vf){try{draw(vf);}finally{vf.close();busy=false;}},error:function(){busy=false;dec=null;}});
+        cfg=codec||'avc1.640028'; st.codec=cfg+(codec?'':' (no SPS in keyframe, guessed)');
+        dec=new VideoDecoder({output:function(vf){st.dec++;try{draw(vf);}finally{vf.close();busy=false;}},error:function(e){st.derr=String(e&&e.message||e);busy=false;dec=null;}});
         dec.configure({codec:cfg,optimizeForLatency:true});
       }
       busy=true;
-      try{dec.decode(new EncodedVideoChunk({type:'key',timestamp:Math.round(performance.now()*1000),data:data}));}catch(e){busy=false;dec=null;}
+      try{dec.decode(new EncodedVideoChunk({type:'key',timestamp:Math.round(performance.now()*1000),data:data}));}catch(e){st.derr=String(e&&e.message||e);busy=false;dec=null;}
     }}));
   }
   // Tell Node when the connection dies so it can rebuild this page.
@@ -174,7 +179,8 @@ export class WebrtcRelay {
       const n = (this.failures.get(printer.id) ?? 0) + (existing.lastFrameAt ? 0 : 1);
       this.failures.set(printer.id, existing.lastFrameAt ? 0 : n);
       const wait = Math.min(120_000, 10_000 * 2 ** Math.max(0, n - 1));
-      console.log(`[webrtc-relay] restarting camera for ${printer.name}: ${why} (next try in ${Math.round(wait / 1000)} s)`);
+      const diag = await existing.page?.evaluate('window.__diag ? window.__diag() : null').catch(() => null);
+      console.log(`[webrtc-relay] restarting camera for ${printer.name}: ${why} (next try in ${Math.round(wait / 1000)} s)${diag ? ` diag=${JSON.stringify(diag)}` : ''}`);
       this.pages.delete(printer.id);
       try { await existing.page?.close(); } catch { /* ignore */ }
       this.retryAt.set(printer.id, Date.now() + wait);
