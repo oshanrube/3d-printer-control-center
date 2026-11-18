@@ -10,6 +10,7 @@ const KLIPPER_HINTS: Record<string, string> = {
   key789: 'A closed-loop motor could not follow its commanded position: the axis may be blocked, binding or overloaded.',
   key60: 'Klipper crashed while running a command, usually as a consequence of an earlier error.',
   key839: 'No other slot holds the same filament to switch to, so the printer paused. Load filament in that slot (or a matching spool), then resume.',
+  key845: 'Filament could not be pushed through the nozzle (seen on the K2 while purging after a CFS filament change), so the printer paused. Clear the nozzle (cold pull or needle; check the cutter and the PTFE path from the box), check filament reaches the hotend, then resume.',
 };
 // English text for codes seen on this fleet (Creality's own messages are sometimes Chinese).
 const KLIPPER_TEXT: Record<string, string> = {
@@ -19,6 +20,7 @@ const KLIPPER_TEXT: Record<string, string> = {
   key96: 'Must home before probe',
   key840: 'Filament box (CFS) switch state error',
   key839: 'Out of filament: none reached the extruder from the filament box', // "no filament detected at box extrude position"
+  key845: 'Nozzle blocked',                                   // "the nozzle is blocked" (K2, during a CFS flush, 2026-11-18)
 };
 
 /**
