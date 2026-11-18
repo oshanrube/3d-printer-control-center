@@ -1,0 +1,55 @@
+#onicprint-app { --op-good: #1e8a4c; --op-warn: #b9770e; --op-bad: #c0392b; --op-blue: #25b9d7; --op-dim: #6c868e; }
+#onicprint-app .op-dim { color: var(--op-dim); font-size: 12px; }
+#onicprint-app .op-sp { flex: 1; }
+#onicprint-app .op-top { display: flex; gap: 16px; flex-wrap: wrap; align-items: stretch; margin-bottom: 14px; }
+#onicprint-app .op-tiles { display: flex; gap: 10px; flex-wrap: wrap; }
+#onicprint-app .op-tile { background: #fff; border: 1px solid #dbe6e9; border-radius: 6px; padding: 10px 16px; min-width: 120px; display: flex; flex-direction: column; }
+#onicprint-app .op-tile b { font-size: 22px; line-height: 1.1; }
+#onicprint-app .op-tile span { color: var(--op-dim); font-size: 12px; }
+#onicprint-app .op-tile.bad b { color: var(--op-bad); }
+#onicprint-app .op-tile.warn b { color: var(--op-warn); }
+#onicprint-app .op-mode { flex: 1; min-width: 320px; display: flex; gap: 10px; align-items: center; background: #fff8e6; border: 1px solid #f0d58c; border-radius: 6px; padding: 10px 14px; }
+#onicprint-app .op-mode > div { flex: 1; }
+#onicprint-app .op-mode.live { background: #eaf7ef; border-color: #a6d9b8; }
+#onicprint-app .op-changes { background: #fff; border: 1px solid #dbe6e9; border-left: 4px solid var(--op-blue); border-radius: 6px; padding: 10px 14px; margin-bottom: 14px; }
+#onicprint-app .op-changes.preview { border-left-color: var(--op-warn); }
+#onicprint-app .op-changes-head { display: flex; gap: 10px; align-items: center; margin-bottom: 6px; }
+#onicprint-app .op-tabs { margin-bottom: 0; }
+#onicprint-app .op-body { background: #fff; border: 1px solid #dbe6e9; border-top: none; padding: 14px; }
+#onicprint-app .op-bar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 8px; }
+#onicprint-app .op-bar .form-control { width: auto; }
+#onicprint-app .op-search { min-width: 260px; }
+#onicprint-app .op-product { border: 1px solid #dbe6e9; border-radius: 6px; margin-bottom: 10px; overflow: hidden; }
+#onicprint-app .op-phead { display: flex; gap: 8px; align-items: center; padding: 9px 12px; background: #f8fafb; cursor: pointer; flex-wrap: wrap; }
+#onicprint-app .op-caret { width: 12px; color: var(--op-dim); }
+#onicprint-app .op-inline { font-weight: normal; margin: 0; display: inline-flex; gap: 6px; align-items: center; cursor: pointer; }
+#onicprint-app .op-table { margin: 0; }
+#onicprint-app .op-table th { font-size: 11px; text-transform: uppercase; color: var(--op-dim); white-space: nowrap; }
+#onicprint-app .op-table td { vertical-align: middle; }
+#onicprint-app .op-table .num { text-align: right; white-space: nowrap; }
+#onicprint-app .op-table .act { text-align: right; white-space: nowrap; }
+#onicprint-app .op-table .chk { width: 30px; text-align: center; }
+#onicprint-app .op-table tr.off td:not(.chk) { opacity: .45; }
+#onicprint-app .op-editor td { background: #f4f9fb; }
+#onicprint-app .op-chip { display: inline-block; font-size: 12px; padding: 1px 7px; border: 1px solid #dbe6e9; border-radius: 4px; margin: 1px 3px 1px 0; white-space: nowrap; background: #fff; }
+#onicprint-app .op-chip.opt { background: #f3f6f7; }
+#onicprint-app .op-chip.colour { border-style: dashed; }
+#onicprint-app .op-pill { display: inline-block; font-size: 11px; font-weight: 600; padding: 1px 8px; border-radius: 10px; background: #eef3f4; color: #4d6067; }
+#onicprint-app .op-pill.good { background: #e3f5ea; color: var(--op-good); }
+#onicprint-app .op-pill.warn { background: #fdf1d8; color: var(--op-warn); }
+#onicprint-app .op-pill.bad { background: #fbe4e1; color: var(--op-bad); }
+#onicprint-app .op-pill.blue { background: #e1f6fb; color: #1a8aa3; }
+#onicprint-app .op-warn { color: var(--op-warn); font-size: 12px; }
+#onicprint-app .op-num { width: 72px; display: inline-block; text-align: right; }
+#onicprint-app .op-num.neg { color: var(--op-bad); border-color: var(--op-bad); }
+#onicprint-app .op-mat { width: 110px; }
+#onicprint-app .op-sel { width: auto; display: inline-block; }
+#onicprint-app .op-sel.wide { min-width: 240px; }
+#onicprint-app .op-prio { width: 100px; display: inline-block; }
+#onicprint-app .op-prio.p1 { border-color: var(--op-blue); font-weight: 600; }
+#onicprint-app .op-recipe { display: flex; flex-direction: column; gap: 6px; }
+#onicprint-app .op-line { display: flex; gap: 8px; align-items: center; }
+#onicprint-app .op-scroll { overflow-x: auto; }
+#onicprint-app td.neg { color: var(--op-bad); font-weight: 600; }
+#onicprint-app td.pos { color: var(--op-good); font-weight: 600; }
+#onicprint-app .op-parts .form-control:not(.op-num) { min-width: 180px; }
