@@ -106,16 +106,34 @@
     if (ui.edit && ui.edit.k === key(i)) html += '<tr class="op-editor"><td></td><td colspan="9">' + recipeEditor() + '</td></tr>';
     return html;
   }
+  /** Units of a part available for an item's colour (null = any colour: all of them). */
+  function avail(partId, colour) {
+    var n = 0;
+    S.stock.forEach(function (x) { if (x.partId === partId && (colour === null || x.colour === colour)) n += Math.max(0, x.qty); });
+    return n;
+  }
   function recipeEditor() {
-    var e = ui.edit;
-    var opts = function (sel) { return S.parts.map(function (p) { return '<option value="' + p.id + '"' + (p.id === sel ? ' selected' : '') + '>' + esc(p.name) + '</option>'; }).join(''); };
-    return '<div class="op-recipe">' + e.lines.map(function (l, n) {
-      return '<div class="op-line"><input type="number" min="1" class="form-control op-num" data-a="lqty" data-n="' + n + '" value="' + l.qty + '"> × ' +
-        '<select class="form-control op-sel wide" data-a="lpart" data-n="' + n + '">' + opts(l.partId) + '</select>' +
-        '<button class="btn btn-link" data-a="ldel" data-n="' + n + '">Remove</button></div>';
-    }).join('') +
-      '<div class="op-line"><button class="btn btn-default btn-sm" data-a="ladd"' + (S.parts.length ? '' : ' disabled') + '>+ Add a part</button>' +
-      '<span class="op-sp"></span><button class="btn btn-primary btn-sm" data-a="lsave">Save recipe</button></div></div>';
+    var e = ui.edit, it = item(e.k), colour = it.colour;
+    var sets = null;
+    e.lines.forEach(function (l) { var n = Math.floor(avail(l.partId, colour) / Math.max(1, l.qty)); sets = sets === null ? n : Math.min(sets, n); });
+    var opts = function (sel) {
+      return S.parts.map(function (p) {
+        var taken = p.id !== sel && e.lines.some(function (l) { return l.partId === p.id; });
+        return '<option value="' + p.id + '"' + (p.id === sel ? ' selected' : '') + (taken ? ' disabled' : '') + '>' + esc(p.name) + (p.material ? ' (' + esc(p.material) + ')' : '') + '</option>';
+      }).join('');
+    };
+    return '<div class="op-recipe"><table class="op-rtable"><thead><tr><th>Qty</th><th></th><th>Printed part</th><th class="num">On hand' + (colour ? ' (' + esc(colour) + ')' : '') + '</th><th></th></tr></thead><tbody>' +
+      e.lines.map(function (l, n) {
+        return '<tr><td><input type="number" min="1" class="form-control op-num" data-a="lqty" data-n="' + n + '" value="' + l.qty + '"></td><td class="op-dim">×</td>' +
+          '<td><select class="form-control op-sel wide" data-a="lpart" data-n="' + n + '">' + opts(l.partId) + '</select></td>' +
+          '<td class="num"><b>' + avail(l.partId, colour) + '</b></td>' +
+          '<td><button class="btn btn-link op-x" data-a="ldel" data-n="' + n + '" title="Remove this part">✕</button></td></tr>';
+      }).join('') + '</tbody></table>' +
+      (e.lines.length ? '' : '<div class="op-dim">No recipe yet: add the printed parts one item is made of.</div>') +
+      '<div class="op-rfoot"><button class="btn btn-default btn-sm" data-a="ladd"' + (e.lines.length < S.parts.length ? '' : ' disabled') + '>+ Add a part</button>' +
+      '<span class="op-rbuild' + (sets === 0 ? ' zero' : '') + '">' + (sets === null ? '' : 'Can build <b>' + sets + '</b> set' + (sets === 1 ? '' : 's') + ' from the parts on hand') + '</span>' +
+      '<span class="op-sp"></span><button class="btn btn-default btn-sm" data-a="edit" data-k="' + e.k + '">Cancel</button>' +
+      '<button class="btn btn-primary btn-sm" data-a="lsave">Save recipe</button></div></div>';
   }
 
   function itemsTab() {
@@ -203,7 +221,10 @@
       else ui.edit = { k: k, lines: item(k).recipe.map(function (r) { return { partId: r.partId, qty: r.qty }; }) };
       render();
     }
-    else if (a === 'ladd') { ui.edit.lines.push({ partId: S.parts[0].id, qty: 1 }); render(); }
+    else if (a === 'ladd') {
+      var free = S.parts.filter(function (p) { return !ui.edit.lines.some(function (l) { return l.partId === p.id; }); })[0];
+      if (free) { ui.edit.lines.push({ partId: free.id, qty: 1 }); render(); }
+    }
     else if (a === 'ldel') { ui.edit.lines.splice(n, 1); render(); }
     else if (a === 'lsave') { var k2 = ui.edit.k, lines = ui.edit.lines; ui.edit = null; act('saveRecipe', merge(ids(k2), { lines: lines })); }
     else if (a === 'preview') { call('preview').then(function (r) { ui.preview = r.changes; ui.changes = null; render(); }, function () {}); }
@@ -233,8 +254,8 @@
     else if (a === 'prio') act('saveItem', merge(ids(k), { priority: +t.value }));
     else if (a === 'printcolour') act('saveItem', merge(ids(k), { printColour: t.value }));
     else if (a === 'ignorecolour') act('saveProduct', { productId: +v, ignoreStoreColour: !t.checked });
-    else if (a === 'lqty') ui.edit.lines[n].qty = Math.max(1, +t.value || 1);
-    else if (a === 'lpart') ui.edit.lines[n].partId = +t.value;
+    else if (a === 'lqty') { ui.edit.lines[n].qty = Math.max(1, +t.value || 1); render(); }
+    else if (a === 'lpart') { ui.edit.lines[n].partId = +t.value; render(); }
     else if (a === 'stock') act('setStock', { partId: +v, colour: t.getAttribute('data-c'), qty: Math.max(0, +t.value || 0) });
     else if (a === 'pname' || a === 'pmat') {
       var p = S.parts.filter(function (x) { return x.id === +v; })[0];

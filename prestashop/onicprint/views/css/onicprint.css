@@ -53,3 +53,12 @@
 #onicprint-app td.neg { color: var(--op-bad); font-weight: 600; }
 #onicprint-app td.pos { color: var(--op-good); font-weight: 600; }
 #onicprint-app .op-parts .form-control:not(.op-num) { min-width: 180px; }
+#onicprint-app .op-recipe { max-width: 720px; background: #fff; border: 1px solid #dbe6e9; border-radius: 6px; padding: 8px 10px; }
+#onicprint-app .op-rtable { width: 100%; }
+#onicprint-app .op-rtable th { font-size: 11px; text-transform: uppercase; color: var(--op-dim); font-weight: 600; padding: 2px 6px 6px; }
+#onicprint-app .op-rtable td { padding: 3px 6px; vertical-align: middle; }
+#onicprint-app .op-rtable .num { text-align: right; white-space: nowrap; }
+#onicprint-app .op-x { color: var(--op-bad); padding: 2px 6px; }
+#onicprint-app .op-rfoot { display: flex; gap: 10px; align-items: center; padding-top: 8px; margin-top: 6px; border-top: 1px dashed #dbe6e9; }
+#onicprint-app .op-rbuild b { font-size: 15px; }
+#onicprint-app .op-rbuild.zero b { color: var(--op-bad); }
