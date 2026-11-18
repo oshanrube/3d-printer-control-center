@@ -26,11 +26,15 @@ type Pending = { resolve: (v: any) => void; reject: (e: any) => void; timer: Nod
  *   'open'                               — websocket connected + subscribed
  *   'close'                              — websocket closed (will auto-reconnect unless stopped)
  */
+const SILENCE_MS = 60_000;
+
 export class MoonrakerClient extends EventEmitter {
   private ws?: WebSocket;
   private nextId = 1;
   private pending = new Map<number, Pending>();
   private reconnectTimer?: NodeJS.Timeout;
+  private watchdog?: NodeJS.Timeout;
+  private lastMsg = 0;
   private stopped = false;
   private subscribedSensors: string[] = [];
   private selfPausingSensors = new Set<string>();  // sensors with pause_on_runout: Klipper pauses by itself
@@ -51,11 +55,27 @@ export class MoonrakerClient extends EventEmitter {
   start() {
     this.stopped = false;
     this.connect();
+    // A printer that reboots or drops off Wi-Fi can leave a half-open socket that never
+    // closes: the dashboard then kept the K2's pre-reboot "error" state for hours while it
+    // printed (2026-11-18). Moonraker sends something every second (proc stats), so 60 s of
+    // silence means the connection is dead: drop it and reconnect. Pings keep it honest.
+    clearInterval(this.watchdog);
+    this.watchdog = setInterval(() => {
+      const ws = this.ws;
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      if (Date.now() - this.lastMsg > SILENCE_MS) {
+        console.warn(`[moonraker] ${this.printer.name}: nothing received for ${Math.round((Date.now() - this.lastMsg) / 1000)} s, reconnecting`);
+        ws.terminate();
+        return;
+      }
+      try { ws.ping(); } catch { /* ignore */ }
+    }, 20_000);
   }
 
   stop() {
     this.stopped = true;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    clearInterval(this.watchdog);
     try { this.ws?.close(); } catch { /* ignore */ }
     this.ws = undefined;
   }
@@ -73,6 +93,7 @@ export class MoonrakerClient extends EventEmitter {
 
     ws.on('open', async () => {
       this.connected = true;
+      this.lastMsg = Date.now();
       try {
         await this.subscribe();
         this.emit('open');
@@ -81,7 +102,8 @@ export class MoonrakerClient extends EventEmitter {
       }
     });
 
-    ws.on('message', (data) => this.onMessage(data.toString()));
+    ws.on('message', (data) => { this.lastMsg = Date.now(); this.onMessage(data.toString()); });
+    ws.on('pong', () => { this.lastMsg = Date.now(); });
 
     ws.on('close', () => {
       this.connected = false;
