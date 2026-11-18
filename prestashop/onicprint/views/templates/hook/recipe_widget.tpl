@@ -5,12 +5,19 @@
   <div class="opr-foot"><button type="button" class="btn btn-outline-secondary btn-sm opr-add">+ Add a part</button><span class="opr-build"></span></div>
 </div>
 <style>
-.onicprint-recipe { border: 1px solid #dbe6e9; border-radius: 6px; padding: 8px 10px; background: #fafbfc; max-width: 640px; }
+/* Printed stock section: minimum, priority and colour on one line; checkbox and recipe full width. */
+#combination_form_onicprint { display: flex; flex-wrap: wrap; gap: 0 16px; }
+#combination_form_onicprint > .form-group { flex: 1 1 100%; min-width: 0; }
+#combination_form_onicprint > .form-group.integer-widget,
+#combination_form_onicprint > .form-group.select-widget { flex: 1 1 0; min-width: 170px; }
+#combination_form_onicprint > .form-group.text-widget .form-text,
+#combination_form_onicprint > .form-group.text-widget small { display: block; width: 100%; }
+.onicprint-recipe { border: 1px solid #dbe6e9; border-radius: 6px; padding: 8px 10px; background: #fafbfc; width: 100%; box-sizing: border-box; }
 .onicprint-recipe .opr-table { width: 100%; border-collapse: collapse; }
 .onicprint-recipe .opr-table th { font-size: 11px; text-transform: uppercase; color: #6c868e; font-weight: 600; padding: 2px 6px 6px; text-align: left; }
 .onicprint-recipe .opr-table td { padding: 3px 6px; vertical-align: middle; }
 .onicprint-recipe .opr-q { width: 80px; }
-.onicprint-recipe .opr-h { width: 130px; text-align: right !important; }
+.onicprint-recipe .opr-h { width: 150px; text-align: right !important; }
 .onicprint-recipe td.opr-h { text-align: right; color: #6c868e; font-size: 13px; white-space: nowrap; }
 .onicprint-recipe td.opr-h b { color: #363a41; }
 .onicprint-recipe input.opr-qty { width: 70px; text-align: right; }
