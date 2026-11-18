@@ -22,7 +22,7 @@ class OnicPrint extends Module
     {
         $this->name = 'onicprint';
         $this->tab = 'administration';
-        $this->version = '1.0.1';
+        $this->version = '1.1.0';
         $this->author = 'Oshan Rube';
         $this->need_instance = 0;
         $this->ps_versions_compliancy = ['min' => '8.0.0', 'max' => _PS_VERSION_];
@@ -41,6 +41,8 @@ class OnicPrint extends Module
             && $this->registerHook('actionValidateOrder')
             && $this->registerHook('actionOrderStatusPostUpdate')
             && $this->registerHook('addWebserviceResources')
+            && $this->registerHook('actionCombinationFormFormBuilderModifier')
+            && $this->registerHook('actionAfterUpdateCombinationFormFormHandler')
             && Configuration::updateValue(OnicPrintInventory::CONF_LIVE, 0)
             && $this->grantWebservice();
     }
@@ -137,6 +139,87 @@ class OnicPrint extends Module
     public function hookAddWebserviceResources($params)
     {
         return ['onicprint' => ['description' => 'Printed stock: parts, recipes, queue for the 3D printer controller', 'specific_management' => true]];
+    }
+
+    // ------------------------------------------------------------------ Edit combination dialog
+
+    private const RECIPE_ROWS_MIN = 4;
+
+    /** Adds a "Printed stock" section to Catalog > Product > Combinations > Edit. */
+    public function hookActionCombinationFormFormBuilderModifier($params)
+    {
+        $this->safely('combination form', function () use ($params) {
+            $cid = (int) ($params['id'] ?? 0);
+            if (!$cid) {
+                return;
+            }
+            $pid = (int) (new Combination($cid))->id_product;
+            $item = null;
+            foreach (OnicPrintInventory::items() as $i) {
+                if ($i['productId'] === $pid && $i['combinationId'] === $cid) {
+                    $item = $i;
+                    break;
+                }
+            }
+            if (!$item) {
+                return;
+            }
+            $T = 'Symfony\Component\Form\Extension\Core\Type\\';
+            $parts = [];
+            foreach (OnicPrintInventory::parts() as $p) {
+                $parts[$p['name'] . ($p['material'] ? ' (' . $p['material'] . ')' : '')] = $p['id'];
+            }
+            $colours = ['Any colour' => ''];
+            foreach (OnicPrintInventory::storeColours() as $c) {
+                $colours[$c] = $c;
+            }
+            $usesStoreColour = $item['hasStoreColour'] && !$item['ignoreStoreColour'];
+            $builder = $params['form_builder'];
+            $builder->add('onicprint', $T . 'FormType', [
+                'label' => 'Printed stock', 'required' => false,
+                'help' => 'Store quantity = full sets the printed parts on hand allow'
+                    . ($item['buildable'] !== null ? ' (now ' . $item['buildable'] . ')' : '') . '. Catalog > Printed stock has every item and the parts on hand.',
+            ]);
+            $f = $builder->get('onicprint');
+            $f->add('managed', $T . 'CheckboxType', ['label' => 'Keep this combination in stock with printed parts', 'required' => false, 'data' => $item['managed']]);
+            $f->add('min_qty', $T . 'IntegerType', ['label' => 'Minimum in stock', 'required' => false, 'data' => $item['minQty'], 'attr' => ['min' => 0]]);
+            $f->add('priority', $T . 'ChoiceType', ['label' => 'Print priority', 'required' => true, 'data' => $item['priority'],
+                'choices' => ['High' => 1, 'Normal' => 0, 'Low' => -1]]);
+            $f->add('print_colour', $T . 'ChoiceType', ['label' => 'Print in', 'required' => false, 'data' => $item['printColour'], 'choices' => $colours,
+                'help' => $usesStoreColour ? 'Not used: this combination is printed in its store colour (' . $item['storeColour'] . ').' : 'This combination has no colour of its own (or the product ignores it).']);
+            $rows = max(self::RECIPE_ROWS_MIN, count($item['recipe']) + 2);
+            for ($n = 1; $n <= $rows; ++$n) {
+                $line = $item['recipe'][$n - 1] ?? null;
+                $f->add('part_' . $n, $T . 'ChoiceType', ['label' => $n === 1 ? 'Recipe: printed parts in one item' : false, 'required' => false,
+                    'placeholder' => '- no part -', 'choices' => $parts, 'data' => $line ? $line['partId'] : null]);
+                $f->add('qty_' . $n, $T . 'IntegerType', ['label' => false, 'required' => false, 'data' => $line ? $line['qty'] : null,
+                    'attr' => ['min' => 1, 'placeholder' => 'qty']]);
+            }
+        });
+    }
+
+    public function hookActionAfterUpdateCombinationFormFormHandler($params)
+    {
+        $this->safely('combination save', function () use ($params) {
+            $d = $params['form_data']['onicprint'] ?? null;
+            $cid = (int) ($params['id'] ?? 0);
+            if (!is_array($d) || !$cid) {
+                return;
+            }
+            $pid = (int) (new Combination($cid))->id_product;
+            OnicPrintInventory::saveItem($pid, $cid, [
+                'managed' => !empty($d['managed']), 'minQty' => (int) ($d['min_qty'] ?? 0),
+                'priority' => (int) ($d['priority'] ?? 0), 'printColour' => (string) ($d['print_colour'] ?? ''),
+            ]);
+            $lines = [];
+            foreach ($d as $k => $v) {
+                if (preg_match('/^part_(\d+)$/', $k, $m) && (int) $v > 0) {
+                    $lines[] = ['partId' => (int) $v, 'qty' => max(1, (int) ($d['qty_' . $m[1]] ?? 1))];
+                }
+            }
+            OnicPrintInventory::saveRecipe($pid, $cid, $lines);
+            OnicPrintInventory::recompute('combination edited');
+        });
     }
 
     /** Never let our bookkeeping break checkout: log and carry on. */
