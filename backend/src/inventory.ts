@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import { config } from './config.js';
 import { db, kv } from './db.js';
 import type { Fleet } from './fleet.js';
-import { fetchCatalog, itemLabel, type StoreOption } from './store.js';
+import { inventoryState, inventoryHistory, itemLabel, type StoreOption } from './store.js';
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS store_items (
@@ -51,6 +51,8 @@ db.exec(`DELETE FROM part_gcodes`);
 // Items whose store variant has no colour option get a colour chosen on the dashboard.
 if (!(db.prepare('PRAGMA table_info(store_items)').all() as any[]).some(c => c.name === 'priority'))
   db.exec(`ALTER TABLE store_items ADD COLUMN priority INTEGER NOT NULL DEFAULT 0`);   // 1 high, 0 normal, -1 low
+if (!(db.prepare('PRAGMA table_info(store_items)').all() as any[]).some(c => c.name === 'print_as'))
+  db.exec(`ALTER TABLE store_items ADD COLUMN print_as TEXT`);   // the module's print colour (null = any)
 if (!(db.prepare('PRAGMA table_info(store_items)').all() as any[]).some(c => c.name === 'default_colour'))
   db.exec(`ALTER TABLE store_items ADD COLUMN default_colour TEXT NOT NULL DEFAULT ''`);
 
@@ -97,19 +99,13 @@ export function syncStore(reason: string): Promise<SyncStatus> {
   running = (async () => {
     const at = Date.now();
     try {
-      const items = await fetchCatalog();
-      const upsert = db.prepare(`
-        INSERT INTO store_items (product_id, combination_id, reference, product_name, options_json, store_qty, in_store, synced_at)
-        VALUES (@productId, @combinationId, @reference, @productName, @options, @quantity, 1, @at)
-        ON CONFLICT (product_id, combination_id) DO UPDATE SET reference = excluded.reference,
-          product_name = excluded.product_name, options_json = excluded.options_json,
-          store_qty = excluded.store_qty, in_store = 1, synced_at = excluded.synced_at`);
-      db.transaction(() => {
-        db.prepare('UPDATE store_items SET in_store = 0').run();   // anything not seen now left the store
-        for (const i of items) upsert.run({ ...i, options: JSON.stringify(i.options), at });
-      })();
-      kv.set(STATUS_KEY, JSON.stringify({ lastSyncAt: at, lastAttemptAt: at, lastError: null, items: items.length, reason }));
-      console.log(`[store] synced ${items.length} items (${reason}) in ${Date.now() - at} ms`);
+      // The store's Printed stock module owns the inventory; mirror it here for the planner and UI.
+      const st = await inventoryState();
+      mirror(st);
+      kv.set(INV_KEY, JSON.stringify({ live: st.live, at, colours: st.colours }));
+      inventoryHistory(50).then(h => kv.set(HISTORY_KEY, JSON.stringify(h))).catch(() => {});
+      kv.set(STATUS_KEY, JSON.stringify({ lastSyncAt: at, lastAttemptAt: at, lastError: null, items: st.items.length, reason }));
+      console.log(`[store] synced ${st.items.length} managed items, ${st.parts.length} parts (${reason}${st.live ? '' : ', store in log-only mode'}) in ${Date.now() - at} ms`);
     } catch (e: any) {
       const prev = JSON.parse(kv.get(STATUS_KEY) || '{}');
       kv.set(STATUS_KEY, JSON.stringify({ ...prev, lastAttemptAt: at, lastError: String(e?.message || e), reason }));
@@ -118,6 +114,50 @@ export function syncStore(reason: string): Promise<SyncStatus> {
     return syncStatus();
   })();
   return running;
+}
+
+const INV_KEY = 'store:inventory';
+export const HISTORY_KEY = 'store:history';
+/** Whether the store's Printed stock module is live (writes store quantities). Auto-load waits until it is. */
+export const inventoryLive = (): boolean => !!JSON.parse(kv.get(INV_KEY) || '{}').live;
+
+/**
+ * Copy the module's state into the local tables: managed items (store_qty = sets buildable,
+ * print_as = print colour), recipes, parts on hand, part names (ids are the module's, so the
+ * G-code files stay linked to their parts).
+ */
+function mirror(st: Awaited<ReturnType<typeof inventoryState>>) {
+  const now = Date.now();
+  db.transaction(() => {
+    const upPart = db.prepare(`INSERT INTO parts (id, name, material, notes, created_at) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT (id) DO UPDATE SET name = excluded.name, material = excluded.material, notes = excluded.notes`);
+    for (const p of st.parts) {
+      try { upPart.run(p.id, p.name, p.material, p.notes || '', now); }
+      catch { db.prepare('UPDATE parts SET name = name || \' (old)\' WHERE name = ? AND id <> ?').run(p.name, p.id); upPart.run(p.id, p.name, p.material, p.notes || '', now); }
+    }
+    db.prepare('UPDATE store_items SET enabled = 0, in_store = 0').run();
+    const upItem = db.prepare(`INSERT INTO store_items (product_id, combination_id, reference, product_name, options_json, store_qty, in_store, synced_at,
+        enabled, min_qty, priority, default_colour, print_as)
+      VALUES (@productId, @combinationId, @reference, @productName, @options, @qty, 1, @at, 1, @minQty, @priority, @printColour, @colour)
+      ON CONFLICT (product_id, combination_id) DO UPDATE SET reference = excluded.reference, product_name = excluded.product_name,
+        options_json = excluded.options_json, store_qty = excluded.store_qty, in_store = 1, synced_at = excluded.synced_at, enabled = 1,
+        min_qty = excluded.min_qty, priority = excluded.priority, default_colour = excluded.default_colour, print_as = excluded.print_as`);
+    db.prepare('DELETE FROM recipes').run();
+    const addRecipe = db.prepare('INSERT OR REPLACE INTO recipes (product_id, combination_id, part_id, qty) VALUES (?, ?, ?, ?)');
+    db.prepare('DELETE FROM store_products').run();
+    const ignore = db.prepare('INSERT OR REPLACE INTO store_products (product_id, ignore_store_colour) VALUES (?, 1)');
+    for (const i of st.items) {
+      upItem.run({ productId: i.productId, combinationId: i.combinationId, reference: i.reference, productName: i.productName,
+        options: JSON.stringify(i.options.map(o => ({ group: o.group, value: o.value }))),
+        // Planning works from what the parts allow (the store shows the same once the module is live).
+        qty: i.buildable ?? i.storeQty, at: now, minQty: i.minQty, priority: i.priority, printColour: i.printColour, colour: i.colour });
+      for (const r of i.recipe) addRecipe.run(i.productId, i.combinationId, r.partId, r.qty);
+      if (i.ignoreStoreColour) ignore.run(i.productId);
+    }
+    db.prepare('DELETE FROM part_stock').run();
+    const addStock = db.prepare('INSERT INTO part_stock (part_id, colour, qty) VALUES (?, ?, ?)');
+    for (const s of st.stock) addStock.run(s.partId, s.colour, s.qty);
+  })();
 }
 
 /** A printer that's online, enabled and not doing anything. */
@@ -139,7 +179,7 @@ function itemsWithRecipes() {
     const options: StoreOption[] = JSON.parse(r.options_json || '[]');
     return {
       productId: r.product_id, combinationId: r.combination_id, reference: r.reference,
-      productName: r.product_name, options, colour: itemColour(options, r.default_colour, r.product_id),
+      productName: r.product_name, options, colour: r.print_as ?? null,
       colourFromStore: !!colourOf(options) && !ignoresStoreColour(r.product_id), hasStoreColour: !!colourOf(options),
       ignoreStoreColour: ignoresStoreColour(r.product_id), defaultColour: r.default_colour,
       label: itemLabel({ productId: r.product_id, combinationId: r.combination_id, reference: r.reference,
@@ -226,50 +266,16 @@ export function registerInventory(app: FastifyInstance, fleet: Fleet) {
     return { status: await syncStore(reason === 'dashboard' ? 'dashboard' : 'manual'), items: itemsWithRecipes() };
   });
 
-  app.patch('/api/store/items/:pid/:cid', async (req, reply) => {
-    const { pid, cid } = req.params as any; const b = (req.body || {}) as any;
-    const row = db.prepare('SELECT 1 FROM store_items WHERE product_id = ? AND combination_id = ?').get(Number(pid), Number(cid));
-    if (!row) return reply.code(404).send({ error: 'Unknown store item.' });
-    if (b.enabled !== undefined) db.prepare('UPDATE store_items SET enabled = ? WHERE product_id = ? AND combination_id = ?').run(b.enabled ? 1 : 0, Number(pid), Number(cid));
-    if (b.defaultColour !== undefined)
-      db.prepare('UPDATE store_items SET default_colour = ? WHERE product_id = ? AND combination_id = ?').run(String(b.defaultColour).slice(0, 60), Number(pid), Number(cid));
-    if (b.priority !== undefined) {
-      const pr = Math.max(-1, Math.min(1, Math.round(Number(b.priority)) || 0));
-      db.prepare('UPDATE store_items SET priority = ? WHERE product_id = ? AND combination_id = ?').run(pr, Number(pid), Number(cid));
-    }
-    if (b.minQty !== undefined) {
-      const q = int(b.minQty, 0, 10000); if (q === null) return reply.code(400).send({ error: 'minQty must be a number.' });
-      db.prepare('UPDATE store_items SET min_qty = ? WHERE product_id = ? AND combination_id = ?').run(q, Number(pid), Number(cid));
-    }
-    return itemsWithRecipes().find(i => i.productId === Number(pid) && i.combinationId === Number(cid));
-  });
-
-  // Product-level settings (shared by all its variants).
-  app.patch('/api/store/products/:pid', async (req, reply) => {
-    const pid = Number((req.params as any).pid); const b = (req.body || {}) as any;
-    if (!db.prepare('SELECT 1 FROM store_items WHERE product_id = ?').get(pid)) return reply.code(404).send({ error: 'Unknown product.' });
-    if (b.ignoreStoreColour !== undefined)
-      db.prepare(`INSERT INTO store_products (product_id, ignore_store_colour) VALUES (?, ?)
-        ON CONFLICT (product_id) DO UPDATE SET ignore_store_colour = excluded.ignore_store_colour`).run(pid, b.ignoreStoreColour ? 1 : 0);
-    return itemsWithRecipes().filter(i => i.productId === pid);
-  });
-
-  app.put('/api/store/items/:pid/:cid/recipe', async (req, reply) => {
-    const { pid, cid } = req.params as any;
-    const parts = Array.isArray((req.body as any)?.parts) ? (req.body as any).parts : null;
-    if (!parts) return reply.code(400).send({ error: 'Send { parts: [{ partId, qty }] }.' });
-    const known = new Set((db.prepare('SELECT id FROM parts').all() as any[]).map(p => p.id));
-    for (const p of parts) {
-      if (!known.has(Number(p.partId))) return reply.code(400).send({ error: `Unknown part ${p.partId}.` });
-      if (!int(p.qty, 1, 1000)) return reply.code(400).send({ error: 'qty must be 1 or more.' });
-    }
-    db.transaction(() => {
-      db.prepare('DELETE FROM recipes WHERE product_id = ? AND combination_id = ?').run(Number(pid), Number(cid));
-      const ins = db.prepare('INSERT INTO recipes (product_id, combination_id, part_id, qty) VALUES (?, ?, ?, ?)');
-      for (const p of parts) ins.run(Number(pid), Number(cid), Number(p.partId), int(p.qty, 1, 1000));
-    })();
-    return itemsWithRecipes().find(i => i.productId === Number(pid) && i.combinationId === Number(cid));
-  });
+  // Items, recipes, parts and on-hand counts are edited in the store (Catalog > Printed stock) since 2026-11-18.
+  const inStore = async (_req: any, reply: any) => reply.code(410).send({ error: 'Edit this in the store admin: Catalog > Printed stock.' });
+  app.patch('/api/store/items/:pid/:cid', inStore);
+  app.patch('/api/store/products/:pid', inStore);
+  app.put('/api/store/items/:pid/:cid/recipe', inStore);
+  app.post('/api/parts', inStore);
+  app.patch('/api/parts/:id', inStore);
+  app.delete('/api/parts/:id', inStore);
+  app.get('/api/store/inventory', async () => ({ live: inventoryLive(), adminUrl: `${config.store.url}/onic_admin/index.php?controller=AdminOnicPrint`,
+    history: JSON.parse(kv.get(HISTORY_KEY) || '{"moves":[],"quantities":[]}') }));
 
   // Printer models in the fleet (for the per-model G-code slots).
   app.get('/api/store/models', async () => {
@@ -283,43 +289,6 @@ export function registerInventory(app: FastifyInstance, fleet: Fleet) {
   });
 
   app.get('/api/parts', async () => partsWithGcodes());
-
-  app.post('/api/parts', async (req, reply) => {
-    const b = (req.body || {}) as any; const name = String(b.name || '').trim();
-    if (!name) return reply.code(400).send({ error: 'A part needs a name.' });
-    if (db.prepare('SELECT 1 FROM parts WHERE name = ?').get(name)) return reply.code(409).send({ error: 'A part with that name exists.' });
-    const info = db.prepare('INSERT INTO parts (name, material, notes, created_at) VALUES (?, ?, ?, ?)')
-      .run(name, String(b.material || '').trim(), String(b.notes || ''), Date.now());
-    return partsWithGcodes().find(p => p.id === Number(info.lastInsertRowid));
-  });
-
-  app.patch('/api/parts/:id', async (req, reply) => {
-    const id = Number((req.params as any).id); const b = (req.body || {}) as any;
-    if (!db.prepare('SELECT 1 FROM parts WHERE id = ?').get(id)) return reply.code(404).send({ error: 'Unknown part.' });
-    if (b.name !== undefined) {
-      const name = String(b.name).trim(); if (!name) return reply.code(400).send({ error: 'A part needs a name.' });
-      if (db.prepare('SELECT 1 FROM parts WHERE name = ? AND id != ?').get(name, id)) return reply.code(409).send({ error: 'A part with that name exists.' });
-      db.prepare('UPDATE parts SET name = ? WHERE id = ?').run(name, id);
-    }
-    if (b.material !== undefined) db.prepare('UPDATE parts SET material = ? WHERE id = ?').run(String(b.material).trim(), id);
-    if (b.notes !== undefined) db.prepare('UPDATE parts SET notes = ? WHERE id = ?').run(String(b.notes), id);
-    if (b.onHand !== undefined) db.prepare('UPDATE parts SET on_hand = ? WHERE id = ?').run(int(b.onHand, 0, 100000) ?? 0, id);
-    return partsWithGcodes().find(p => p.id === id);
-  });
-
-  app.delete('/api/parts/:id', async (req, reply) => {
-    const id = Number((req.params as any).id);
-    const used = db.prepare('SELECT COUNT(*) n FROM recipes WHERE part_id = ?').get(id) as any;
-    if (used.n) return reply.code(409).send({ error: `This part is in ${used.n} recipe(s): remove it from them first.` });
-    for (const g of db.prepare('SELECT path FROM part_files WHERE part_id = ?').all(id) as any[]) {
-      try { unlinkSync(join(config.dataDir, g.path)); } catch { /* already gone */ }
-    }
-    try { rmSync(join(LIBRARY, `part-${id}`), { recursive: true, force: true }); } catch { /* ignore */ }
-    db.prepare('DELETE FROM part_files WHERE part_id = ?').run(id);
-    db.prepare('DELETE FROM part_stock WHERE part_id = ?').run(id);
-    db.prepare('DELETE FROM parts WHERE id = ?').run(id);
-    return { ok: true };
-  });
 
   // Files: several per part and model, each with its own units per plate.
   // Upload: POST /api/parts/:id/files?model=K1C&units=3, body = the file, header X-Filename.

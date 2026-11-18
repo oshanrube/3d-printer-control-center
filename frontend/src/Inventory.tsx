@@ -40,6 +40,7 @@ export function InventoryPage({ tab }: { tab: InventoryTab }) {
   const [stock, setStock] = useState<{ partId: number; colour: string; qty: number }[]>([]);
   const [storeColours, setStoreColours] = useState<string[]>([]);
   const [counts, setCounts] = useState<{ plates: number; short: number; activeJobs: number } | null>(null);
+  const [inv, setInv] = useState<{ live: boolean; adminUrl: string } | null>(null);
 
   const loadItems = () => api.storeItems().then(r => { setItems(r.items); setStatus(r.status); }).catch(fail('Loading store items'));
   const loadParts = () => { api.parts().then(setParts).catch(fail('Loading parts')); api.partStock().then(setStock).catch(() => {}); };
@@ -47,15 +48,15 @@ export function InventoryPage({ tab }: { tab: InventoryTab }) {
     plates: p.jobs.length, short: p.items.length,
     activeJobs: j.jobs.filter(x => ['loading', 'loaded', 'printing', 'printed'].includes(x.status)).length,
   })).catch(() => {});
-  useEffect(() => { loadItems(); loadParts(); loadCounts(); api.models().then(setModels).catch(() => {}); api.colours().then(c => setStoreColours(c.storeColours)).catch(() => {}); }, []);
+  const loadInv = () => api.inventory().then(setInv).catch(() => {});
+  useEffect(() => { loadItems(); loadParts(); loadCounts(); loadInv(); api.models().then(setModels).catch(() => {}); api.colours().then(c => setStoreColours(c.storeColours)).catch(() => {}); }, []);
   useEffect(() => { loadCounts(); }, [tab]);
 
   const syncNow = async () => {
     setSyncing(true);
-    try { const r = await api.storeSync('manual'); setItems(r.items); setStatus(r.status); loadCounts(); }
+    try { const r = await api.storeSync('manual'); setItems(r.items); setStatus(r.status); loadCounts(); loadParts(); loadInv(); }
     catch (e: any) { fail('Sync')(e); } finally { setSyncing(false); }
   };
-  const replaceItem = (u: StoreItem) => setItems(xs => xs && xs.map(x => x.productId === u.productId && x.combinationId === u.combinationId ? u : x));
   const replacePart = (u: Part) => setParts(ps => ps.map(p => p.id === u.id ? u : p));
   const managed = items?.filter(i => i.enabled).length ?? 0;
   const TABS: { id: InventoryTab; label: string; badge?: string | number; warn?: boolean }[] = [
@@ -76,6 +77,15 @@ export function InventoryPage({ tab }: { tab: InventoryTab }) {
         </span>
         <button class="btn btn-sm" disabled={syncing} onClick={syncNow}>{syncing ? 'Syncing…' : '↻ Sync now'}</button>
       </div>
+      <div class={`inv-source ${inv && !inv.live ? 'warn' : ''}`}>
+        <div>
+          <b>Items, recipes, minimums, priorities and parts on hand are managed in the store</b> (Catalog → Printed stock).
+          {inv && (inv.live
+            ? <span> Store quantities follow the parts on hand.</span>
+            : <span> It is in <b>log-only</b> mode: store quantities aren't written yet, and <b>auto-load waits</b> until you switch it to Live there.</span>)}
+        </div>
+        {inv && <a class="btn btn-sm" href={inv.adminUrl} target="_blank" rel="noopener">Open Printed stock ↗</a>}
+      </div>
       <nav class="inv-tabs">
         {TABS.map(t => (
           <button key={t.id} class={`inv-tab ${tab === t.id ? 'on' : ''}`} onClick={() => setTab(t.id)}>
@@ -83,7 +93,7 @@ export function InventoryPage({ tab }: { tab: InventoryTab }) {
           </button>
         ))}
       </nav>
-      {tab === 'items' && <ItemsTab items={items} parts={parts} onItem={replaceItem} colours={storeColours} />}
+      {tab === 'items' && <ItemsTab items={items} parts={parts} />}
       {tab === 'parts' && <PartsTab parts={parts} models={models} onPart={replacePart} reload={loadParts} stock={stock} colours={storeColours} />}
       {tab === 'queue' && <QueueTab />}
       {tab === 'colours' && <ColourTable />}
@@ -95,79 +105,64 @@ export function InventoryPage({ tab }: { tab: InventoryTab }) {
 // ---------------------------------------------------------------------------
 // Store items
 
-const PRIORITIES: [number, string][] = [[1, 'High'], [0, 'Normal'], [-1, 'Low']];
-function PrioritySelect({ value, onChange }: { value: number; onChange: (v: number) => void }) {
-  return (
-    <select class={`prio prio-${value}`} value={String(value)} title="Print priority"
-      onChange={(e: any) => onChange(Number(e.currentTarget.value))}>
-      {PRIORITIES.map(([v, l]) => <option value={String(v)}>{l}</option>)}
-    </select>
-  );
-}
+type ItemFilter = 'all' | 'out' | 'short' | 'norecipe';
+const PRIO_LABEL: Record<number, string> = { 1: 'High', 0: '', [-1]: 'Low' };
 
-type ItemFilter = 'all' | 'managed' | 'short' | 'norecipe';
-
-function ItemsTab({ items, parts, onItem, colours }: { items: StoreItem[] | null; parts: Part[]; onItem: (i: StoreItem) => void; colours: string[] }) {
+/** Managed store items, read-only: they are set up in the store (Catalog > Printed stock). */
+function ItemsTab({ items, parts }: { items: StoreItem[] | null; parts: Part[] }) {
   const [q, setQ] = useState('');
   const [filter, setFilter] = useState<ItemFilter>('all');
   const [open, setOpen] = useState<Set<number>>(new Set());
   if (!items) return <p class="muted">Loading…</p>;
-  if (!items.length) return <p class="muted">No store items yet. Click “Sync now”.</p>;
-  const isShort = (i: StoreItem) => i.enabled && i.storeQty < i.minQty;
-  const pass = (i: StoreItem) => filter === 'all' || (filter === 'managed' && i.enabled)
-    || (filter === 'short' && isShort(i)) || (filter === 'norecipe' && i.enabled && !i.recipe.length);
-  const shown = items.filter(i => pass(i) && (!q || `${i.reference} ${i.label}`.toLowerCase().includes(q.toLowerCase())));
+  const managed = items.filter(i => i.enabled);
+  if (!managed.length) return <p class="muted">No managed items. Set them up in the store: Catalog → Printed stock, then “Sync now”.</p>;
+  const partName = (id: number) => parts.find(p => p.id === id)?.name || `part ${id}`;
+  const isShort = (i: StoreItem) => i.storeQty < i.minQty;
+  const isOut = (i: StoreItem) => i.minQty > 0 && i.storeQty <= 0;
+  const test = (f: ItemFilter, i: StoreItem) => f === 'all' || (f === 'out' && isOut(i)) || (f === 'short' && isShort(i) && !isOut(i)) || (f === 'norecipe' && !i.recipe.length);
+  const shown = managed.filter(i => test(filter, i) && (!q || `${i.reference} ${i.label}`.toLowerCase().includes(q.toLowerCase())));
   const products = [...new Map(shown.map(i => [i.productId, i.productName])).entries()];
   const toggle = (pid: number) => setOpen(s => { const n = new Set(s); n.has(pid) ? n.delete(pid) : n.add(pid); return n; });
-  const setAll = async (pid: number, enabled: boolean) => {
-    for (const i of items.filter(x => x.productId === pid && x.enabled !== enabled)) onItem(await api.updateItem(i, { enabled }));
-  };
-  const n = (f: ItemFilter) => items.filter(i => f === 'all' || (f === 'managed' && i.enabled) || (f === 'short' && isShort(i)) || (f === 'norecipe' && i.enabled && !i.recipe.length)).length;
-  const FILTERS: [ItemFilter, string][] = [['all', 'All'], ['managed', 'Managed'], ['short', 'Below minimum'], ['norecipe', 'No recipe']];
-
+  const FILTERS: [ItemFilter, string][] = [['all', 'All'], ['out', 'Out of stock'], ['short', 'Below minimum'], ['norecipe', 'No recipe']];
   return (
     <>
       <div class="inv-toolbar">
         <input class="inv-search" placeholder="Search name or reference…" value={q} onInput={(e: any) => setQ(e.currentTarget.value)} />
         <div class="seg">
-          {FILTERS.map(([f, label]) => <button key={f} class={filter === f ? 'on' : ''} onClick={() => setFilter(f)}>{label} <span>{n(f)}</span></button>)}
+          {FILTERS.map(([f, label]) => <button key={f} class={filter === f ? 'on' : ''} onClick={() => setFilter(f)}>{label} <span>{managed.filter(i => test(f, i)).length}</span></button>)}
         </div>
       </div>
-      <p class="inv-hint-line">Tick the variants to keep in stock, set a minimum and a recipe (the printed parts that make one).</p>
+      <p class="inv-hint-line"><b>Can build</b> = full sets from the parts on hand (what the store shows once Printed stock is live).</p>
       {products.map(([pid, name]) => {
         const rows = shown.filter(i => i.productId === pid);
-        const all = items.filter(i => i.productId === pid);
-        const man = all.filter(i => i.enabled).length;
-        const shortN = all.filter(isShort).length;
+        const all = managed.filter(i => i.productId === pid);
+        const outN = all.filter(isOut).length, shortN = all.filter(i => isShort(i) && !isOut(i)).length;
         const isOpen = open.has(pid) || !!q || filter !== 'all';
         return (
           <div class={`inv-product ${isOpen ? 'open' : ''}`} key={pid}>
             <div class="inv-prow" onClick={() => toggle(pid)}>
               <span class="caret">{isOpen ? '▾' : '▸'}</span>
               <span class="pname-l">{name}</span>
-              <span class="pill">{all.length} variant{all.length === 1 ? '' : 's'}</span>
-              {man > 0 && <span class="pill pill-on">{man} managed</span>}
+              <span class="pill">{all.length} item{all.length === 1 ? '' : 's'}</span>
+              {outN > 0 && <span class="pill pill-out">{outN} out</span>}
               {shortN > 0 && <span class="pill pill-warn">{shortN} below min</span>}
-              <div class="spacer" />
-              {isOpen && (
-                <span class="prow-tools" onClick={(e) => e.stopPropagation()}>
-                  {all[0]?.hasStoreColour && (
-                    <label class="inv-check" title="Off: the store's colour option is ignored for printing (any colour, or the variant's “Print in” choice)">
-                      <input type="checkbox" checked={!all[0].ignoreStoreColour}
-                        onChange={async (e: any) => { try { for (const u of await api.updateProduct(pid, { ignoreStoreColour: !e.currentTarget.checked })) onItem(u); } catch (err) { fail('Saving')(err); } }} />
-                      Print in store colour
-                    </label>
-                  )}
-                  {all.length > 1 && <><button class="chip" onClick={() => setAll(pid, true).catch(fail('Saving'))}>Manage all</button>
-                    <button class="chip" onClick={() => setAll(pid, false).catch(fail('Saving'))}>None</button></>}
-                </span>
-              )}
             </div>
             {isOpen && (
               <div class="table-wrap">
                 <table class="inv-table">
-                  <thead><tr><th class="c-check" /><th>Variant</th><th>Reference</th><th class="c-num">Stock / min</th><th>Priority</th><th>Recipe</th><th /></tr></thead>
-                  <tbody>{rows.map(i => <ItemRow key={`${i.productId}-${i.combinationId}`} item={i} parts={parts} onItem={onItem} colours={colours} />)}</tbody>
+                  <thead><tr><th>Variant</th><th>Reference</th><th class="c-num">Can build / min</th><th>Recipe</th></tr></thead>
+                  <tbody>{rows.map(i => (
+                    <tr key={`${i.productId}-${i.combinationId}`}>
+                      <td><div class="opts">{i.options.length ? i.options.map(o => <span class="opt" title={o.group}>{o.value}</span>) : <span class="muted">—</span>}</div></td>
+                      <td><code class="ref">{i.reference || '—'}</code>{PRIO_LABEL[i.priority] && <span class={`pill ${i.priority > 0 ? 'pill-high' : ''}`}>{PRIO_LABEL[i.priority]}</span>}</td>
+                      <td class="c-num"><span class={`stock ${isShort(i) ? 'short' : ''}`}>{i.storeQty}</span> / {i.minQty}
+                        {isOut(i) ? <span class="pill pill-out">out</span> : isShort(i) ? <span class="pill pill-warn">−{i.minQty - i.storeQty}</span> : null}</td>
+                      <td>{i.recipe.length
+                        ? <div class="opts">{i.recipe.map(r => <span class="opt part">{r.qty}× {partName(r.partId)}</span>)}
+                            <span class={`opt colour ${i.colour ? '' : 'any'}`}>{i.colour || 'any colour'}</span></div>
+                        : <span class="inv-warn small">No recipe</span>}</td>
+                    </tr>
+                  ))}</tbody>
                 </table>
               </div>
             )}
@@ -179,115 +174,21 @@ function ItemsTab({ items, parts, onItem, colours }: { items: StoreItem[] | null
   );
 }
 
-function ItemRow({ item: i, parts, onItem, colours }: { item: StoreItem; parts: Part[]; onItem: (i: StoreItem) => void; colours: string[] }) {
-  const [editing, setEditing] = useState(false);
-  const partName = (id: number) => parts.find(p => p.id === id)?.name || `part ${id}`;
-  const short = i.enabled && i.storeQty < i.minQty;
-  return (
-    <>
-      <tr class={`${i.enabled ? 'on' : 'off'} ${!i.inStore ? 'gone' : ''}`}>
-        <td class="c-check"><input type="checkbox" title="Keep this variant in stock" checked={i.enabled}
-          onChange={(e: any) => api.updateItem(i, { enabled: e.currentTarget.checked }).then(onItem).catch(fail('Saving'))} /></td>
-        <td>
-          <div class="opts">{i.options.length ? i.options.map(o => <span class="opt" title={o.group}>{o.value}</span>) : <span class="muted">—</span>}</div>
-          {!i.inStore && <div class="inv-err small">No longer in the store</div>}
-        </td>
-        <td><code class="ref">{i.reference || '—'}</code></td>
-        <td class="c-num">
-          <span class={`stock ${short ? 'short' : ''}`}>{i.storeQty}</span>
-          {i.enabled
-            ? <> / <EditField type="number" min={0} class="inv-num" value={i.minQty} onSave={v => api.updateItem(i, { minQty: Number(v) || 0 }).then(onItem).catch(fail('Saving'))} />
-                {short && <span class={`pill ${i.storeQty <= 0 ? 'pill-out' : 'pill-warn'}`}>{i.storeQty <= 0 ? 'out' : `−${i.minQty - i.storeQty}`}</span>}</>
-            : null}
-        </td>
-        <td>{i.enabled && <PrioritySelect value={i.priority} onChange={v => api.updateItem(i, { priority: v }).then(onItem).catch(fail('Saving'))} />}</td>
-        <td>
-          {i.enabled && (i.recipe.length
-            ? <div class="opts">{i.recipe.map(r => <span class="opt part">{r.qty}× {partName(r.partId)}</span>)}
-                <span class={`opt colour ${i.colour ? '' : 'any'}`}>{i.colour || 'any colour'}</span></div>
-            : <span class="inv-warn small">No recipe</span>)}
-        </td>
-        <td class="c-act">{i.enabled && <button class="chip" onClick={() => setEditing(!editing)}>{editing ? 'Close' : 'Edit'}</button>}</td>
-      </tr>
-      {editing && (
-        <tr class="editor-row"><td /><td colSpan={6}>
-          <RecipeEditor item={i} parts={parts} colours={colours} onSaved={(u) => { onItem(u); setEditing(false); }} />
-        </td></tr>
-      )}
-    </>
-  );
-}
-
-function RecipeEditor({ item, parts, colours, onSaved }: { item: StoreItem; parts: Part[]; colours: string[]; onSaved: (i: StoreItem) => void }) {
-  const [rows, setRows] = useState(item.recipe.map(r => ({ ...r })));
-  const [colour, setColour] = useState(item.defaultColour);
-  const [add, setAdd] = useState('');
-  const unused = parts.filter(p => !rows.some(r => r.partId === p.id));
-  return (
-    <div class="inv-recipe">
-      {!parts.length && <p class="muted">No printed parts yet: add them in the “Printed parts” tab first.</p>}
-      {rows.map((r, k) => (
-        <div class="row" key={r.partId}>
-          <input type="number" min={1} class="inv-num" value={r.qty}
-            onInput={(e: any) => setRows(rows.map((x, j) => j === k ? { ...x, qty: Number(e.currentTarget.value) } : x))} />
-          <span>× {parts.find(p => p.id === r.partId)?.name}</span>
-          <button class="chip" onClick={() => setRows(rows.filter((_, j) => j !== k))}>Remove</button>
-        </div>
-      ))}
-      {unused.length > 0 && (
-        <div class="row">
-          <select value={add} onChange={(e: any) => setAdd(e.currentTarget.value)}>
-            <option value="">Add a part…</option>
-            {unused.map(p => <option value={p.id}>{p.name}</option>)}
-          </select>
-          <button class="chip" disabled={!add} onClick={() => { setRows([...rows, { partId: Number(add), qty: 1 }]); setAdd(''); }}>Add</button>
-        </div>
-      )}
-      {item.colourFromStore
-        ? <p class="muted">Colour: <b>{item.colour}</b> (from the store variant)</p>
-        : (
-          <label class="muted">Print in{' '}
-            {item.hasStoreColour && <span>The store colour isn't used for this product. </span>}
-            <select value={colour} onChange={(e: any) => setColour(e.currentTarget.value)}>
-              <option value="">Any colour (whatever is loaded)</option>
-              {colours.map(c => <option value={c}>{c}</option>)}
-            </select>
-            {' '}{!item.hasStoreColour && <span>This store item has no colour option, so choose it here.</span>}
-          </label>
-        )}
-      <button class="btn btn-sm btn-primary" onClick={async () => {
-        try {
-          if (!item.colourFromStore && colour !== item.defaultColour) await api.updateItem(item, { defaultColour: colour });
-          onSaved(await api.setRecipe(item, rows.filter(r => r.qty > 0)));
-        } catch (e) { fail('Saving recipe')(e); }
-      }}>Save recipe</button>
-    </div>
-  );
-}
-
 // ---------------------------------------------------------------------------
 // Printed parts
 
 function PartsTab({ parts, models, onPart, reload, stock, colours }: { parts: Part[]; models: PrinterModel[]; onPart: (p: Part) => void; reload: () => void;
   stock: { partId: number; colour: string; qty: number }[]; colours: string[] }) {
-  const [name, setName] = useState(''); const [material, setMaterial] = useState('');
   const [q, setQ] = useState('');
-  const create = () => api.addPart({ name: name.trim(), material: material.trim() })
-    .then(() => { setName(''); setMaterial(''); reload(); }).catch(fail('Adding the part'));
   const sorted = useMemo(() => [...parts].sort((a, b) => a.name.localeCompare(b.name)), [parts]);
   const shown = sorted.filter(p => !q || p.name.toLowerCase().includes(q.toLowerCase()));
   return (
     <>
       <div class="inv-toolbar">
         <input class="inv-search" placeholder="Search parts…" value={q} onInput={(e: any) => setQ(e.currentTarget.value)} />
-        <div class="newpart">
-          <input placeholder="New part name" value={name} onInput={(e: any) => setName(e.currentTarget.value)} />
-          <input class="inv-mat" placeholder="Material" value={material} onInput={(e: any) => setMaterial(e.currentTarget.value)} />
-          <button class="btn btn-sm btn-primary" disabled={!name.trim()} onClick={create}>Add part</button>
-        </div>
       </div>
-      <p class="inv-hint-line">Each file has its own units per plate (a 1-up and a 3-up layout, or a bigger K2 plate); the biggest layout that doesn't overshoot is used. Files sliced for another model are flagged ⚠️.</p>
-      {!sorted.length && <p class="inv-hint">No parts yet. Add one above, then add its G-code files.</p>}
+      <p class="inv-hint-line">Parts and their on-hand counts come from the store (Catalog → Printed stock); the G-code files are kept here. Each file has its own units per plate (a 1-up and a 3-up layout, or a bigger K2 plate); the biggest layout that doesn't overshoot is used. Files sliced for another model are flagged ⚠️.</p>
+      {!sorted.length && <p class="inv-hint">No parts yet. Add them in the store (Catalog → Printed stock), then “Sync now”.</p>}
       <div class="part-grid">
         {shown.map(p => <PartCard key={p.id} part={p} models={models} onPart={onPart} reload={reload} stock={stock.filter(x => x.partId === p.id)} colours={colours} />)}
       </div>
@@ -298,12 +199,10 @@ function PartsTab({ parts, models, onPart, reload, stock, colours }: { parts: Pa
 function PartCard({ part: p, models, onPart, reload, stock, colours }: { part: Part; models: PrinterModel[]; onPart: (p: Part) => void; reload: () => void;
   stock: { colour: string; qty: number }[]; colours: string[] }) {
   const [busy, setBusy] = useState<string | null>(null);
-  const [editStock, setEditStock] = useState(false);
   const [addModel, setAddModel] = useState(models[0]?.model ?? '');
   const [addUnits, setAddUnits] = useState('1');
   useEffect(() => { if (!addModel && models[0]) setAddModel(models[0].model); }, [models]);
   const onHand = stock.filter(x => x.qty > 0);
-  const save = (patch: any) => api.updatePart(p.id, patch).then(onPart).catch(fail('Saving'));
   const warnAfter = (u: Part, fileId?: number) => {
     const f = fileId ? u.files.find(x => x.id === fileId) : [...u.files].sort((a, b) => b.id - a.id)[0];
     if (f?.meta.warnings.length) alert(`Uploaded, but check this:\n\n${f.meta.warnings.join('\n')}`);
@@ -317,25 +216,13 @@ function PartCard({ part: p, models, onPart, reload, stock, colours }: { part: P
   return (
     <div class="part-card">
       <div class="part-head">
-        <EditField class="inv-pname" value={p.name} onSave={v => v ? save({ name: v }) : alert('A part needs a name.')} />
-        <EditField class="inv-mat" placeholder="Material" value={p.material} onSave={v => save({ material: v })} />
-        <button class="icon-chip" title="Delete this part" onClick={() => confirm(`Delete “${p.name}” and its G-code files?`) && api.deletePart(p.id).then(reload).catch(fail('Deleting'))}>🗑</button>
+        <span class="inv-pname">{p.name}</span>
+        {p.material && <span class="opt">{p.material}</span>}
       </div>
       <div class="part-onhand">
         <span class="muted small">On hand</span>
-        {onHand.length ? onHand.map(x => <span class="opt colour">{x.qty} {x.colour || 'any colour'}</span>) : <span class="muted small">none</span>}
-        <button class="chip" onClick={() => setEditStock(!editStock)}>{editStock ? 'Done' : 'Edit'}</button>
+        {onHand.length ? onHand.map(x => <span class="opt colour">{x.qty} {x.colour || 'no colour'}</span>) : <span class="muted small">none</span>}
       </div>
-      {editStock && (
-        <div class="inv-stock">
-          {['', ...colours].map(c => (
-            <label class="muted small">{c || 'No colour'}{' '}
-              <EditField type="number" min={0} class="inv-num" value={stock.find(x => x.colour === c)?.qty ?? 0}
-                onSave={v => api.setPartStock(p.id, c, Number(v) || 0).then(reload).catch(fail('Saving'))} />
-            </label>
-          ))}
-        </div>
-      )}
       <div class="table-wrap"><table class="inv-table files">
         <thead><tr><th>Model</th><th class="c-num">Per plate</th><th>File</th><th /></tr></thead>
         <tbody>
@@ -381,7 +268,6 @@ function QueueTab() {
   useEffect(() => { load(); }, []);
   if (!plan) return <p class="muted">Working out the plan…</p>;
   const ready = plan.printers.filter(p => p.ready).map(p => p.name);
-  const setPrio = (i: Plan['items'][number], v: number) => api.updateItem(i, { priority: v }).then(load).catch(fail('Saving'));
   // Print order: consecutive identical plates collapse into one numbered row (#2–4).
   type Row = { from: number; to: number; j: Plan['jobs'][number] };
   const rows: Row[] = [];
@@ -434,7 +320,7 @@ function QueueTab() {
             <tr key={`${i.productId}-${i.combinationId}`}><td><code class="ref">{i.reference}</code></td>
               <td class="c-num">{i.outOfStock ? <span class="pill pill-out">0</span> : i.storeQty}</td><td class="c-num">{i.minQty}</td>
               <td class="c-num"><span class="pill pill-warn">{i.short}</span></td>
-              <td><PrioritySelect value={i.priority} onChange={v => setPrio(i, v)} /></td>
+              <td>{i.priority > 0 ? <span class="pill pill-high">High</span> : i.priority < 0 ? <span class="pill">Low</span> : <span class="muted small">Normal</span>}</td>
               <td>{i.problems.length > 0 && <span class="inv-warn small">⚠️ {i.problems.join(', ')}</span>}</td></tr>
           ))}</tbody>
         </table></div>
@@ -494,7 +380,7 @@ function JobsTab() {
   const load = () => api.storeJobs().then(setSt).catch(fail('Loading jobs'));
   useEffect(() => { load(); const t = setInterval(load, 15_000); return () => clearInterval(t); }, []);
   if (!st) return <p class="muted">Loading…</p>;
-  const set = (patch: { autoLoad?: boolean; liveWrites?: boolean }, ask: string) => { if (confirm(ask)) api.jobSettings(patch).then(setSt).catch(fail('Saving')); };
+  const set = (patch: { autoLoad?: boolean }, ask: string) => { if (confirm(ask)) api.jobSettings(patch).then(setSt).catch(fail('Saving')); };
   const active = st.jobs.filter(j => ['loading', 'loaded', 'printing', 'printed'].includes(j.status));
   const done = st.jobs.filter(j => !active.includes(j));
   const when = (t: number | null) => t ? new Date(t).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
@@ -506,11 +392,11 @@ function JobsTab() {
             set({ autoLoad: on }, on ? 'Turn on auto-load? Planned plates are put on ready printers (uploaded if the file isn\'t there yet). Printing still needs you to start it.' : 'Turn off auto-load? Nothing new is sent to printers.'); }} />
           <div><b>Auto-load jobs</b><div class="muted small">{st.autoLoad ? 'On: ready printers get their next plate' : 'Off: plan only, nothing is sent to printers'}</div></div>
         </label>
-        <label class={`switch-row ${st.liveWrites ? 'on' : ''}`}>
-          <input type="checkbox" checked={st.liveWrites} onChange={(e: any) => { const on = e.currentTarget.checked; e.currentTarget.checked = st.liveWrites;
-            set({ liveWrites: on }, on ? 'Turn on live store updates? Completed sets will raise the stock on store.onicindustries.com.' : 'Back to dry run? Store stock changes are only logged.'); }} />
-          <div><b>Store stock updates</b><div class="muted small">{st.liveWrites ? 'Live: completed sets raise the store stock' : 'Dry run: changes are only logged'}</div></div>
-        </label>
+        <div class={`switch-row static ${st.liveWrites ? 'on' : ''}`}>
+          <div><b>Store quantities: {st.liveWrites ? 'Live' : 'Log only'}</b><div class="muted small">{st.liveWrites
+            ? 'Completed parts go to the store; it sets the quantities.'
+            : 'Completed parts go to the store; quantities are only logged and auto-load waits. Switch it in Printed stock.'}</div></div>
+        </div>
         <button class="btn btn-sm" disabled={!st.autoLoad} onClick={() => api.dispatchNow().then(setSt).catch(fail('Loading jobs'))}>Load now</button>
       </div>
 
@@ -527,8 +413,8 @@ function JobsTab() {
         </table></div>
       )}
 
-      <h3 class="inv-h3">Store stock changes{st.liveWrites ? '' : ' (dry run)'}</h3>
-      {!st.updates.length ? <p class="muted">None yet: they appear when completed parts make full sets.</p> : (
+      <h3 class="inv-h3">Store quantity changes{st.liveWrites ? '' : ' (log only)'}</h3>
+      {!st.updates.length ? <p class="muted">None yet: they appear when parts on hand change a managed item's quantity.</p> : (
         <div class="table-wrap"><table class="inv-table">
           <thead><tr><th>When</th><th>Reference</th><th class="c-num">Stock</th><th>Used</th></tr></thead>
           <tbody>{(allUpdates ? st.updates : st.updates.slice(0, 6)).map(u => (

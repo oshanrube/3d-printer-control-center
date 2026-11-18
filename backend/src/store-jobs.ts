@@ -6,7 +6,7 @@ import { db, kv } from './db.js';
 import type { Fleet } from './fleet.js';
 import type { Spool } from './creality.js';
 import type { LiveState } from './types.js';
-import { MODEL_NAMES, itemColour, syncStore } from './inventory.js';
+import { MODEL_NAMES, syncStore } from './inventory.js';
 import type { StoreOption } from './store.js';
 
 db.exec(`
@@ -185,7 +185,7 @@ export function plan(fleet: Fleet) {
       const options: StoreOption[] = JSON.parse(r.options_json || '[]');
       const label = `${r.reference || r.product_name}`;
       const recipe = recipes.filter(x => x.product_id === r.product_id && x.combination_id === r.combination_id);
-      return { r, label, colour: itemColour(options, r.default_colour, r.product_id), recipe, priority: Number(r.priority) || 0,
+      return { r, label, colour: (r.print_as ?? null) as string | null, recipe, priority: Number(r.priority) || 0,
         out: r.store_qty <= 0, short: Math.max(0, r.min_qty - r.store_qty), fraction: (r.min_qty - r.store_qty) / r.min_qty };
     })
     .filter(x => x.short > 0)
@@ -202,17 +202,29 @@ export function plan(fleet: Fleet) {
   demands.sort((a, b) => b.x.priority - a.x.priority || (a.stage === b.stage ? 0 : a.stage === 'out' ? -1 : 1)
     || Number(b.x.out) - Number(a.x.out) || b.x.fraction - a.x.fraction);
 
-  // Parts needed per (part, colour, priority, stage), in that order, taking spare parts on hand first.
+  // Parts needed per (part, colour, priority, stage), in that order. store_qty is already the sets
+  // the parts on hand allow (the store's Printed stock module), and a part shared by several items
+  // counts for each of them (as the store shows it). So per part + colour the target is the most
+  // any waiting item needs (qty per set x the sets it should reach), not the sum; on hand and
+  // plates on their way count against it.
+  const availableFor = (partId: number, colour: string | null) => {
+    let n = 0;
+    for (const [k, q] of onHand) if (colour !== null ? k === `${partId}|${colour}` : k.startsWith(`${partId}|`)) n += Math.max(0, q);
+    return n;
+  };
+  const planned = new Map<string, number>();
   const need = new Map<string, { partId: number; colour: string | null; qty: number; forItems: string[]; stage: Stage; priority: number }>();
   for (const d of demands) {
+    const targetSets = d.stage === 'out' ? 1 : d.x.r.min_qty;
     for (const line of d.x.recipe) {
       if (!parts.get(line.part_id)) continue;
-      let qty = line.qty * d.sets;
-      qty -= takeParts(onHand, line.part_id, d.x.colour, qty).taken;   // spares and plates on their way first
-      if (!qty) continue;
+      const pc = `${line.part_id}|${d.x.colour ?? ''}`;
+      const extra = line.qty * targetSets - availableFor(line.part_id, d.x.colour) - (planned.get(pc) ?? 0);
+      if (extra <= 0) continue;
+      planned.set(pc, (planned.get(pc) ?? 0) + extra);
       const key = `${line.part_id}|${d.x.colour ?? ''}|${d.x.priority}|${d.stage}`;
       if (!need.has(key)) need.set(key, { partId: line.part_id, colour: d.x.colour, qty: 0, forItems: [], stage: d.stage, priority: d.x.priority });
-      const n = need.get(key)!; n.qty += qty; if (!n.forItems.includes(d.x.label)) n.forItems.push(d.x.label);
+      const n = need.get(key)!; n.qty += extra; if (!n.forItems.includes(d.x.label)) n.forItems.push(d.x.label);
     }
   }
   const items = short.map(x => ({
@@ -344,13 +356,6 @@ export function registerStoreJobs(app: FastifyInstance, fleet: Fleet) {
 
   // Parts on hand per colour.
   app.get('/api/parts/stock', async () => db.prepare('SELECT part_id AS partId, colour, qty FROM part_stock WHERE qty > 0').all());
-  app.put('/api/parts/:id/stock', async (req, reply) => {
-    const id = Number((req.params as any).id); const b = (req.body || {}) as any;
-    if (!db.prepare('SELECT 1 FROM parts WHERE id = ?').get(id)) return reply.code(404).send({ error: 'Unknown part.' });
-    const qty = Math.max(0, Math.min(100000, Math.round(Number(b.qty))));
-    if (!Number.isFinite(qty)) return reply.code(400).send({ error: 'qty must be a number.' });
-    db.prepare(`INSERT INTO part_stock (part_id, colour, qty) VALUES (?, ?, ?)
-      ON CONFLICT (part_id, colour) DO UPDATE SET qty = excluded.qty`).run(id, String(b.colour ?? ''), qty);
-    return db.prepare('SELECT part_id AS partId, colour, qty FROM part_stock WHERE part_id = ? AND qty > 0').all(id);
-  });
+  app.put('/api/parts/:id/stock', async (_req, reply) => reply.code(410).send({ error: 'Count parts in the store admin: Catalog > Printed stock.' }));
+
 }

@@ -129,3 +129,57 @@ export async function addStock(productId: number, combinationId: number, delta: 
   if (after !== want) throw new Error(`store: stock reads ${after} after setting ${want}`);
   return { before: row.quantity, after };
 }
+
+// ---------------------------------------------------------------------------
+// The store's "Printed stock" module (onicprint): the inventory lives in the store now
+// (2026-11-18). Parts on hand, recipes, minimums and priorities are edited there; the store
+// quantity of a managed item = full sets its parts on hand allow. The controller reads it to
+// plan prints and reports printed parts back.
+
+export interface InvItem {
+  productId: number; combinationId: number; reference: string; productName: string; label: string;
+  options: { group: string; value: string; colour: boolean }[];
+  storeColour: string | null; ignoreStoreColour: boolean; printColour: string; colour: string | null;
+  managed: boolean; minQty: number; priority: number; recipe: { partId: number; qty: number }[];
+  storeQty: number; buildable: number | null;
+}
+export interface InvState {
+  live: boolean; at: number; colours: string[];
+  parts: { id: number; name: string; material: string; notes: string }[];
+  stock: { partId: number; colour: string; qty: number }[];
+  items: InvItem[];
+}
+export interface QtyChange { reference: string; label: string; before: number; after: number; written: boolean }
+
+async function onicprint(method: 'GET' | 'POST', action: string, body?: unknown): Promise<any> {
+  if (!config.store.apiKey) throw new Error('STORE_API_KEY is not set');
+  const url = `${config.store.url}/api/onicprint?action=${action}&output_format=JSON`;
+  let res: Response | undefined;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      res = await fetch(url, {
+        method, signal: AbortSignal.timeout(60_000),
+        headers: { Authorization: `Basic ${Buffer.from(`${config.store.apiKey}:`).toString('base64')}`, ...(body ? { 'Content-Type': 'application/json' } : {}) },
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      break;
+    } catch (e: any) {
+      // Only GETs are retried blindly; "complete" is idempotent per ref, so it may be retried too.
+      if (attempt >= 2) {
+        const cause = e?.cause?.code || e?.cause?.message || '';
+        throw new Error(`can't reach the store (Printed stock)${cause ? `: ${cause}` : `: ${e?.message || e}`}`);
+      }
+      await new Promise(r => setTimeout(r, attempt ? 8000 : 3000));
+    }
+  }
+  const r: any = await res.json().catch(() => null);
+  if (!res.ok || !r) throw new Error(`store Printed stock (${action}): HTTP ${res.status}`);
+  if (!r.ok) throw new Error(`store Printed stock (${action}): ${r.error || 'failed'}`);
+  return r;
+}
+
+export const inventoryState = (): Promise<InvState> => onicprint('GET', 'state');
+export const inventoryHistory = (limit = 50): Promise<{ moves: any[]; quantities: any[] }> => onicprint('GET', `history&limit=${limit}`);
+/** Printed parts arrive. Idempotent per ref (the job), so a retry never counts them twice. */
+export const reportPrinted = (b: { partId: number; colour: string; qty: number; ref: string; note: string }): Promise<{ already: boolean; changes: QtyChange[] }> =>
+  onicprint('POST', 'complete', b);

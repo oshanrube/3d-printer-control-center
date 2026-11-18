@@ -118,6 +118,7 @@ export const api = {
     if (!res.ok) throw new Error(body?.error || `server returned ${res.status}`);
     return body;
   },
+  inventory: () => j<{ live: boolean; adminUrl: string }>('/api/store/inventory'),
   storeItems: () => j<{ status: SyncStatus; items: StoreItem[] }>('/api/store/items'),
   storeSync: (reason: 'manual' | 'dashboard') => j<{ status: SyncStatus; items: StoreItem[] }>('/api/store/sync', { method: 'POST', body: JSON.stringify({ reason }) }),
   updateItem: (i: { productId: number; combinationId: number }, patch: { enabled?: boolean; minQty?: number; defaultColour?: string; priority?: number }) =>
@@ -143,7 +144,7 @@ export const api = {
   deleteFile: (id: number, fileId: number) => j<Part>(`/api/parts/${id}/files/${fileId}`, { method: 'DELETE' }),
   plan: () => j<Plan>('/api/store/plan'),
   storeJobs: () => j<JobsState>('/api/store/jobs'),
-  jobSettings: (patch: { autoLoad?: boolean; liveWrites?: boolean }) => j<JobsState>('/api/store/jobs/settings', { method: 'POST', body: JSON.stringify(patch) }),
+  jobSettings: (patch: { autoLoad?: boolean }) => j<JobsState>('/api/store/jobs/settings', { method: 'POST', body: JSON.stringify(patch) }),
   dispatchNow: () => j<JobsState>('/api/store/dispatch', { method: 'POST' }),
   jobAction: (id: number, action: 'complete' | 'failed' | 'cancel' | 'start') => j<JobsState>(`/api/store/jobs/${id}/${action}`, { method: 'POST' }),
   printerJobs: (id: number, patch: { available?: boolean; manualMaterial?: string; manualColour?: string }) =>

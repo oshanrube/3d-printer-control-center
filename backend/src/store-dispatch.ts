@@ -13,9 +13,9 @@ import { config } from './config.js';
 import { db, kv } from './db.js';
 import type { Fleet } from './fleet.js';
 import type { LiveState, PrinterEvent } from './types.js';
-import { itemColour, syncStore } from './inventory.js';
+import { HISTORY_KEY, inventoryLive, syncStore } from './inventory.js';
 import { activeJob, plan, takeParts } from './store-jobs.js';
-import { addStock } from './store.js';
+import { reportPrinted } from './store.js';
 import { listGcodes, printState, startPrint, uploadGcode } from './printer-files.js';
 import type { StoreOption } from './store.js';
 
@@ -29,7 +29,6 @@ CREATE TABLE IF NOT EXISTS store_updates (     -- every store stock change, made
 
 const setting = (k: string) => kv.get(k) === '1';
 export const autoLoad = () => setting('store:autoload');
-export const liveWrites = () => setting('store:writes');
 
 type Report = (e: Omit<PrinterEvent, 'createdAt'>) => unknown;
 const IDLE = ['standby', 'complete', 'cancelled'];
@@ -51,6 +50,9 @@ const DISPATCH_STUCK_MS = 15 * 60_000;   // longer than any upload: the lock is 
 /** Load planned plates onto ready printers (only with auto-load on). One run at a time. */
 export function dispatch(fleet: Fleet, report: Report, reason: string): Promise<void> {
   if (!autoLoad()) return Promise.resolve();
+  // The store's Printed stock module decides what's needed. Until it's live (parts counted,
+  // quantities checked by the owner) its numbers aren't trusted for loading printers.
+  if (!inventoryLive()) { console.log(`[store] dispatch (${reason}): waiting, the store's Printed stock is in log-only mode`); return Promise.resolve(); }
   if (dispatching && Date.now() - dispatchStarted > DISPATCH_STUCK_MS) {
     console.warn(`[store] dispatch run from ${new Date(dispatchStarted).toISOString()} never finished: releasing it`);
     dispatching = null;
@@ -154,63 +156,19 @@ export function track(fleet: Fleet, report: Report, s: LiveState, prev: string |
 }
 
 // ---------------------------------------------------------------------------
-// Complete -> parts on hand -> assemble items -> store stock
+// Complete -> the store's Printed stock (parts on hand); it sets the store quantities itself.
 
-function addParts(partId: number, colour: string, qty: number) {
-  db.prepare(`INSERT INTO part_stock (part_id, colour, qty) VALUES (?, ?, ?)
-    ON CONFLICT (part_id, colour) DO UPDATE SET qty = qty + excluded.qty`).run(partId, colour, qty);
-}
-
-/**
- * Turn complete sets of parts on hand into store stock for managed items below their minimum,
- * furthest below first. Live: parts are used up and the store's stock goes up by 1 per set.
- * Dry run: nothing changes; what would happen is logged in store_updates.
- */
-export async function assemble(report: Report): Promise<number> {
-  const live = liveWrites();
-  const stock = new Map<string, number>();
-  for (const r of db.prepare('SELECT * FROM part_stock').all() as any[]) stock.set(`${r.part_id}|${r.colour}`, r.qty);
-  const recipes = db.prepare('SELECT * FROM recipes').all() as any[];
-  const items = (db.prepare('SELECT * FROM store_items WHERE enabled = 1 AND in_store = 1 AND min_qty > store_qty').all() as any[])
-    .sort((a, b) => (b.min_qty - b.store_qty) / b.min_qty - (a.min_qty - a.store_qty) / a.min_qty);
-  let made = 0;
-  for (const it of items) {
-    const recipe = recipes.filter(r => r.product_id === it.product_id && r.combination_id === it.combination_id);
-    if (!recipe.length) continue;
-    const colour = itemColour(JSON.parse(it.options_json || '[]') as StoreOption[], it.default_colour, it.product_id);
-    let qty = it.store_qty;
-    while (qty < it.min_qty) {
-      // Take a full set on a copy first: only commit it if every part is there.
-      const trial = new Map(stock);
-      const used = recipe.map(r => ({ r, ...takeParts(trial, r.part_id, colour, r.qty) }));
-      if (used.some(u => u.taken < u.r.qty)) break;
-      for (const [k, v] of trial) stock.set(k, v);
-      const parts = used.map(u => u.from.map(([c, n]) => `${n}× ${partName(u.r.part_id)}${c ? ` ${c}` : ''}`).join(', ')).join(', ');
-      if (!live) {
-        db.prepare(`INSERT INTO store_updates (at, product_id, combination_id, reference, delta, before_qty, after_qty, dry_run, parts) VALUES (?, ?, ?, ?, 1, ?, ?, 1, ?)`)
-          .run(Date.now(), it.product_id, it.combination_id, it.reference, qty, qty + 1, parts);
-        qty++; made++; continue;
-      }
-      try {
-        const { before, after } = await addStock(it.product_id, it.combination_id, 1);
-        db.transaction(() => {
-          for (const u of used) for (const [c, n] of u.from) db.prepare('UPDATE part_stock SET qty = qty - ? WHERE part_id = ? AND colour = ?').run(n, u.r.part_id, c);
-          db.prepare('UPDATE store_items SET store_qty = ? WHERE product_id = ? AND combination_id = ?').run(after, it.product_id, it.combination_id);
-          db.prepare(`INSERT INTO store_updates (at, product_id, combination_id, reference, delta, before_qty, after_qty, dry_run, parts) VALUES (?, ?, ?, ?, 1, ?, ?, 0, ?)`)
-            .run(Date.now(), it.product_id, it.combination_id, it.reference, before, after, parts);
-        })();
-        qty = after; made++;
-      } catch (e: any) {
-        db.prepare(`INSERT INTO store_updates (at, product_id, combination_id, reference, delta, dry_run, error, parts) VALUES (?, ?, ?, ?, 1, 0, ?, ?)`)
-          .run(Date.now(), it.product_id, it.combination_id, it.reference, String(e?.message || e), parts);
-        report({ printerId: 0, printerName: 'Store', type: 'store_job', severity: 'warning', title: `📦 Couldn't update ${it.reference} in the store`,
-          message: String(e?.message || e), filename: null, actionTaken: null });
-        return made;
-      }
-    }
-  }
-  if (made) console.log(`[store] assembled ${made} item(s) (${live ? 'live' : 'dry run'})`);
-  return made;
+async function complete(j: any, fleet: Fleet, report: Report) {
+  const printer = fleet.client(j.printer_id)?.printer.name || `Printer ${j.printer_id}`;
+  const r = await reportPrinted({ partId: j.part_id, colour: j.colour || '', qty: j.units, ref: `job:${j.id}`,
+    note: `${printer}: ${j.units}x ${partName(j.part_id)}${j.colour ? ` ${j.colour}` : ''} (job ${j.id})` });
+  const changed = r.changes.map(c => `${c.reference} ${c.before}→${c.after}`).join(', ');
+  const note = r.already ? 'already in the store' : r.changes.length
+    ? `store ${r.changes[0].written ? 'now' : 'would be (log only)'}: ${changed}` : 'added to parts on hand';
+  setJob(j.id, { status: 'completed', ended_at: j.ended_at ?? Date.now(), note: note.slice(0, 500) });
+  if (r.changes.length) report({ printerId: j.printer_id, printerName: printer, type: 'store_job', severity: 'info',
+    title: `📦 ${partName(j.part_id)} ×${j.units} added to the store`, message: `${j.units} on hand. ${note}.`, filename: j.printer_file, actionTaken: 'completed' });
+  console.log(`[store] job ${j.id} completed: ${note}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -238,17 +196,18 @@ export function registerStoreDispatch(app: FastifyInstance, fleet: Fleet, report
       status: j.status, note: j.note, forItems: JSON.parse(j.for_items || '[]'),
       createdAt: j.created_at, loadedAt: j.loaded_at, startedAt: j.started_at, endedAt: j.ended_at }));
   };
-  const updatesOut = () => (db.prepare('SELECT * FROM store_updates ORDER BY id DESC LIMIT 50').all() as any[])
-    .map(u => ({ id: u.id, at: u.at, reference: u.reference, delta: u.delta, before: u.before_qty, after: u.after_qty,
-      dryRun: !!u.dry_run, error: u.error, parts: u.parts }));
-  const out = () => ({ autoLoad: autoLoad(), liveWrites: liveWrites(), jobs: jobsOut(), updates: updatesOut() });
+  // Store quantity changes, from the store's Printed stock history (refreshed on every sync).
+  const updatesOut = () => ((JSON.parse(kv.get(HISTORY_KEY) || '{}').quantities ?? []) as any[]).slice(0, 50)
+    .map(u => ({ id: Number(u.id), at: Date.parse(String(u.date_add).replace(' ', 'T') + '+05:30') || 0, reference: u.reference,
+      delta: Number(u.qty_after) - Number(u.qty_before), before: Number(u.qty_before), after: Number(u.qty_after),
+      dryRun: !Number(u.written), error: null, parts: u.reason }));
+  const out = () => ({ autoLoad: autoLoad(), liveWrites: inventoryLive(), jobs: jobsOut(), updates: updatesOut() });
 
   app.get('/api/store/jobs', async () => out());
 
   app.post('/api/store/jobs/settings', async (req) => {
     const b = (req.body || {}) as any;
     if (b.autoLoad !== undefined) { kv.set('store:autoload', b.autoLoad ? '1' : '0'); if (b.autoLoad) afterSync(); }
-    if (b.liveWrites !== undefined) kv.set('store:writes', b.liveWrites ? '1' : '0');
     return out();
   });
 
@@ -263,9 +222,7 @@ export function registerStoreDispatch(app: FastifyInstance, fleet: Fleet, report
 
   app.post('/api/store/jobs/:id/complete', withJob(async j => {
     if (!['printed', 'printing'].includes(j.status)) return { error: `This job is ${j.status}: only a printed job can be completed.` };
-    setJob(j.id, { status: 'completed', ended_at: j.ended_at ?? Date.now() });
-    addParts(j.part_id, j.colour, j.units);
-    await assemble(report);
+    await complete(j, fleet, report);   // throws (job stays printed) if the store can't be reached
     afterSync();
   }));
   app.post('/api/store/jobs/:id/failed', withJob(j => {
