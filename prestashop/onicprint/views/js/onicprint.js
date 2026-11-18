@@ -66,7 +66,7 @@
       '<span class="op-dim">' + c.length + ' change' + (c.length === 1 ? '' : 's') + '</span><span class="op-sp"></span>' +
       (isPrev && c.length ? '<button class="btn btn-primary btn-sm" data-a="apply">Write these to the store</button>' : '') +
       '<button class="btn btn-default btn-sm" data-a="closechanges">Close</button></div>' +
-      (c.length ? '<table class="table op-table"><thead><tr><th>Reference</th><th>Item</th><th class="num">Store</th></tr></thead><tbody>' + rows + '</tbody></table>'
+      (c.length ? '<table class="table op-table"><thead><tr><th title="The combination reference in the store">Reference</th><th title="Product and options">Item</th><th class="num" title="Store quantity now → what the parts on hand allow">Store</th></tr></thead><tbody>' + rows + '</tbody></table>'
         : '<p class="op-dim">Every managed item already matches its parts on hand.</p>') + '</div>';
   }
 
@@ -122,7 +122,7 @@
         return '<option value="' + p.id + '"' + (p.id === sel ? ' selected' : '') + (taken ? ' disabled' : '') + '>' + esc(p.name) + (p.material ? ' (' + esc(p.material) + ')' : '') + '</option>';
       }).join('');
     };
-    return '<div class="op-recipe"><table class="op-rtable"><thead><tr><th>Qty</th><th></th><th>Printed part</th><th class="num">On hand' + (colour ? ' (' + esc(colour) + ')' : '') + '</th><th></th></tr></thead><tbody>' +
+    return '<div class="op-recipe"><table class="op-rtable"><thead><tr><th title="How many of this part go into one item">Qty</th><th></th><th title="A part printed by the 3D printers">Printed part</th><th class="num" title="Loose parts you have that this item can use (its colour, or every colour for an any-colour item)">On hand' + (colour ? ' (' + esc(colour) + ')' : '') + '</th><th></th></tr></thead><tbody>' +
       e.lines.map(function (l, n) {
         return '<tr><td><input type="number" min="1" class="form-control op-num" data-a="lqty" data-n="' + n + '" value="' + l.qty + '"></td><td class="op-dim">×</td>' +
           '<td><select class="form-control op-sel wide" data-a="lpart" data-n="' + n + '">' + opts(l.partId) + '</select></td>' +
@@ -152,7 +152,7 @@
         (out ? '<span class="op-pill bad">' + out + ' out</span>' : '') + (sh - out > 0 ? '<span class="op-pill warn">' + (sh - out) + ' below min</span>' : '') + '<span class="op-sp"></span>' +
         (all[0].hasStoreColour ? '<label class="op-inline" data-stop="1"><input type="checkbox" data-a="ignorecolour" data-v="' + pid + '"' + (all[0].ignoreStoreColour ? '' : ' checked') + '> Print in the store colour</label>' : '') +
         (all.length > 1 ? '<button class="btn btn-link btn-sm" data-a="all" data-v="' + pid + '" data-on="1">Manage all</button><button class="btn btn-link btn-sm" data-a="all" data-v="' + pid + '" data-on="0">None</button>' : '') + '</div>';
-      if (open) html += '<table class="table op-table"><thead><tr><th></th><th>Options</th><th>Reference</th><th class="num">Store</th><th class="num">Can build</th><th class="num">Min</th><th>Priority</th><th>Colour</th><th>Recipe</th><th></th></tr></thead><tbody>' +
+      if (open) html += '<table class="table op-table"><thead><tr><th title="Ticked = kept in stock with printed parts (the printers fill it up to its minimum)">✓</th><th title="The store combination (size, colour, ...)">Options</th><th title="The combination reference in the store">Reference</th><th class="num" title="Quantity the store shows now. ≠ means it differs from what the parts on hand allow (written when Printed stock is live)">Store</th><th class="num" title="Full sets the printed parts on hand allow. This becomes the store quantity">Can build</th><th class="num" title="Minimum to keep in stock; the printers fill up to this">Min</th><th title="Print order: High first, then out-of-stock items, then the rest up to their minimum">Priority</th><th title="The colour it is printed in: the store colour option, or the "print in" choice when the product has none (or ignores it)">Colour</th><th title="The printed parts that make one item">Recipe</th><th></th></tr></thead><tbody>' +
         rows.map(itemRow).join('') + '</tbody></table>';
       html += '</div>';
     });
@@ -160,22 +160,59 @@
     return html;
   }
 
+  /**
+   * Parts still to print so every managed item can reach its minimum. Per part and colour the
+   * target is the most any one item needs (qty per set x minimum): a part shared by several items
+   * counts for each of them, as the store shows it. Parts on hand count against it; "any colour"
+   * items may use every colour. Same rule as the printer controller's queue (which also counts
+   * plates already printing).
+   */
+  function toPrint() {
+    var target = {};   // partId -> { colour|'*': units }
+    S.items.forEach(function (i) {
+      if (!i.managed || !i.minQty) return;
+      i.recipe.forEach(function (r) {
+        var t = target[r.partId] = target[r.partId] || {}, c = i.colour === null ? '*' : i.colour;
+        t[c] = Math.max(t[c] || 0, r.qty * i.minQty);
+      });
+    });
+    var out = {};
+    Object.keys(target).forEach(function (pid) {
+      var t = target[pid], res = [], coloured = 0;
+      // Coloured needs first; parts printed for them also serve the "any colour" items.
+      Object.keys(t).forEach(function (c) {
+        if (c === '*') return;
+        var n = t[c] - avail(+pid, c);
+        if (n > 0) { res.push({ colour: c, n: n }); coloured += n; }
+      });
+      if (t['*']) { var any = t['*'] - avail(+pid, null) - coloured; if (any > 0) res.push({ colour: '', n: any }); }
+      out[pid] = res;
+    });
+    return out;
+  }
+
   function partsTab() {
     var cols = [''].concat(S.colours);
-    var used = {};
-    S.items.forEach(function (i) { if (i.managed) i.recipe.forEach(function (r) { used[r.partId] = (used[r.partId] || 0) + 1; }); });
-    var head = '<tr><th>Part</th><th>Material</th>' + cols.map(function (c) { return '<th class="num">' + esc(c || 'No colour') + '</th>'; }).join('') + '<th class="num">Total</th><th class="num">In items</th><th></th></tr>';
+    var used = {}, need = toPrint();
+    S.items.forEach(function (i) { if (i.managed) i.recipe.forEach(function (r) { (used[r.partId] = used[r.partId] || []).push(i.reference || i.label); }); });
+    var head = '<tr><th title="Printed part name (also used by the printer controller for its G-code files)">Part</th><th title="Filament it is printed in (ABS, PLA, ...)">Material</th>' + cols.map(function (c) { return '<th class="num" title="' + (c ? 'Loose parts on hand in ' + esc(c) : 'Loose parts on hand with no colour (counted for any-colour items)') + '">' + esc(c || 'No colour') + '</th>'; }).join('') +
+      '<th class="num" title="All colours together">Total on hand</th><th class="num" title="Managed store items whose recipe uses this part">Used in</th>' +
+      '<th title="Still to print so every managed item can reach its minimum">To print</th><th></th></tr>';
     var rows = S.parts.map(function (p) {
-      var total = 0;
+      var total = 0, u = used[p.id] || [], n = need[p.id] || [];   // need[p.id] undefined = no item using it has a minimum
       var cells = cols.map(function (c) { var q = stockOf(p.id, c); total += q; return '<td class="num"><input type="number" min="0" class="form-control op-num' + (q < 0 ? ' neg' : '') + '" data-a="stock" data-v="' + p.id + '" data-c="' + esc(c) + '" value="' + q + '"></td>'; }).join('');
       return '<tr><td><input class="form-control" data-a="pname" data-v="' + p.id + '" value="' + esc(p.name) + '"></td>' +
         '<td><input class="form-control op-mat" data-a="pmat" data-v="' + p.id + '" value="' + esc(p.material) + '"></td>' + cells +
-        '<td class="num"><b>' + total + '</b></td><td class="num">' + (used[p.id] || 0) + '</td>' +
+        '<td class="num"><b>' + total + '</b></td>' +
+        '<td class="num" title="' + esc(u.join('\n')) + '">' + (u.length ? u.length + ' item' + (u.length === 1 ? '' : 's') : '<span class="op-dim">none</span>') + '</td>' +
+        '<td>' + (n.length ? n.map(function (x) { return '<span class="op-pill warn">' + x.n + ' ' + esc(x.colour || 'any colour') + '</span>'; }).join(' ')
+          : need[p.id] ? '<span class="op-pill good">enough</span>' : u.length ? '<span class="op-dim" title="Every item using it has a minimum of 0">no minimums</span>' : '') + '</td>' +
         '<td class="act"><button class="btn btn-link" data-a="pdel" data-v="' + p.id + '" title="Delete part">✕</button></td></tr>';
     }).join('');
     return '<div class="op-bar"><input class="form-control" id="op-newname" placeholder="New part name"><input class="form-control op-mat" id="op-newmat" placeholder="Material">' +
       '<button class="btn btn-primary" data-a="padd">Add part</button></div>' +
-      '<p class="op-dim">On hand = loose printed parts you actually have, per colour. Change a number after a physical count; printed parts from the controller and sales update it on their own.</p>' +
+      '<p class="op-dim">On hand = loose printed parts you actually have, per colour; change a number after a physical count (printed parts from the controller and sales update it on their own). ' +
+      '<b>To print</b> = what is still missing for every managed item to reach its minimum; a part shared by several items counts once per colour, as the store shows stock. Plates already printing are not counted here (the controller\'s queue does count them).</p>' +
       '<div class="op-scroll"><table class="table op-table op-parts"><thead>' + head + '</thead><tbody>' + rows + '</tbody></table></div>';
   }
 
@@ -183,9 +220,9 @@
     var h = ui.history;
     if (!h) { call('history').then(function (r) { ui.history = r; render(); }, function () {}); return '<p class="op-dim">Loading…</p>'; }
     var label = { print: 'Printed', sale: 'Sold', 'return': 'Order cancelled', count: 'Counted', 'import': 'Imported' };
-    return '<h4>Parts on hand changes</h4><div class="op-scroll"><table class="table op-table"><thead><tr><th>When</th><th>Part</th><th>Colour</th><th class="num">Change</th><th>Why</th><th>Note</th></tr></thead><tbody>' +
+    return '<h4>Parts on hand changes</h4><div class="op-scroll"><table class="table op-table"><thead><tr><th title="Store time">When</th><th title="Printed part">Part</th><th title="Colour of the parts that changed">Colour</th><th class="num" title="Parts added (+) or taken (−)">Change</th><th title="Printed (from the controller), Sold, Order cancelled, Counted (by hand) or Imported">Why</th><th title="Order reference, printer and job, or who counted">Note</th></tr></thead><tbody>' +
       h.moves.map(function (m) { return '<tr><td class="op-dim">' + esc(m.date_add) + '</td><td>' + esc(m.part || m.id_part) + '</td><td>' + esc(m.colour || '—') + '</td><td class="num ' + (m.delta < 0 ? 'neg' : 'pos') + '">' + (m.delta > 0 ? '+' : '') + m.delta + '</td><td>' + esc(label[m.reason] || m.reason) + '</td><td class="op-dim">' + esc(m.note) + '</td></tr>'; }).join('') +
-      '</tbody></table></div><h4>Store quantity changes</h4><div class="op-scroll"><table class="table op-table"><thead><tr><th>When</th><th>Reference</th><th class="num">Store</th><th>Written</th><th>Why</th></tr></thead><tbody>' +
+      '</tbody></table></div><h4>Store quantity changes</h4><div class="op-scroll"><table class="table op-table"><thead><tr><th title="Store time">When</th><th title="The combination reference">Reference</th><th class="num" title="Store quantity before → after">Store</th><th title="Yes = written to the store; log only = worked out but not written (log-only mode)">Written</th><th title="What changed: an order, printed parts, a count, a recipe ...">Why</th></tr></thead><tbody>' +
       h.quantities.map(function (q) { return '<tr><td class="op-dim">' + esc(q.date_add) + '</td><td><code>' + esc(q.reference) + '</code></td><td class="num">' + q.qty_before + ' → <b>' + q.qty_after + '</b></td><td>' + (+q.written ? 'Yes' : '<span class="op-dim">log only</span>') + '</td><td class="op-dim">' + esc(q.reason) + '</td></tr>'; }).join('') +
       '</tbody></table></div>';
   }

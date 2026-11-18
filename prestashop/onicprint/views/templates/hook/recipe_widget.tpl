@@ -1,6 +1,6 @@
 {* Recipe editor inside Catalog > Product > Combinations > Edit. Writes JSON into the hidden "recipe" field. *}
 <div class="onicprint-recipe" data-input="{$input_id|escape:'html':'UTF-8'}" data-parts="{$parts_json|escape:'html':'UTF-8'}" data-recipe="{$recipe_json|escape:'html':'UTF-8'}">
-  <table class="opr-table"><thead><tr><th class="opr-q">Qty</th><th></th><th>Printed part</th><th class="opr-h">On hand{if $colour} ({$colour|escape:'html':'UTF-8'}){/if}</th><th></th></tr></thead><tbody></tbody></table>
+  <table class="opr-table"><thead><tr><th class="opr-q" title="How many of this part go into one item">Qty</th><th></th><th title="A part printed by the 3D printers">Printed part</th><th class="opr-h" title="Loose parts you have that this item can use (its colour, or every colour for an any-colour item)">On hand{if $colour} ({$colour|escape:'html':'UTF-8'}){/if}</th><th></th></tr></thead><tbody></tbody></table>
   <div class="opr-empty">No recipe yet: add the printed parts one item is made of.</div>
   <div class="opr-foot"><button type="button" class="btn btn-outline-secondary btn-sm opr-add">+ Add a part</button><span class="opr-build"></span></div>
 </div>
@@ -16,6 +16,7 @@
 .onicprint-recipe .opr-table { width: 100%; border-collapse: collapse; }
 .onicprint-recipe .opr-table th { font-size: 11px; text-transform: uppercase; color: #6c868e; font-weight: 600; padding: 2px 6px 6px; text-align: left; }
 .onicprint-recipe .opr-table td { padding: 3px 6px; vertical-align: middle; }
+.onicprint-recipe .opr-table th[title] { cursor: help; text-decoration: underline dotted rgba(108,134,142,.6); text-underline-offset: 3px; }
 .onicprint-recipe .opr-q { width: 80px; }
 .onicprint-recipe .opr-h { width: 150px; text-align: right !important; }
 .onicprint-recipe td.opr-h { text-align: right; color: #6c868e; font-size: 13px; white-space: nowrap; }

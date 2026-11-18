@@ -62,3 +62,4 @@
 #onicprint-app .op-rfoot { display: flex; gap: 10px; align-items: center; padding-top: 8px; margin-top: 6px; border-top: 1px dashed #dbe6e9; }
 #onicprint-app .op-rbuild b { font-size: 15px; }
 #onicprint-app .op-rbuild.zero b { color: var(--op-bad); }
+#onicprint-app th[title] { cursor: help; text-decoration: underline dotted rgba(108,134,142,.6); text-underline-offset: 3px; }
