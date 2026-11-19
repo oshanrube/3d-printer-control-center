@@ -304,7 +304,10 @@ export class Engine {
     // print (printing or paused), not only while "printing".
     const fil = s.filamentDetected;
     const activePrint = s.state === 'printing' || (s.state === 'paused' && (t.inPrint || prev?.state === 'printing'));
-    if (activePrint && fil === false && t.lastFilament !== false) {
+    // Only a real change counts: filament present -> empty. An unknown previous value (backend
+    // restart, reconnect) followed by "empty" isn't a runout: Zoro's toolhead sensor reads empty
+    // while printing, which raised a false runout on every restart (2026-11-19).
+    if (activePrint && fil === false && t.lastFilament === true) {
       // The printer pauses by itself (pause_on_runout): never send a second pause.
       const alreadyPaused = s.state === 'paused' || !!this.fleet.client(s.printerId)?.pausesOnRunout;
       const action = alreadyPaused ? 'paused by the printer' : config.autoPauseOnRunout ? 'auto-paused' : undefined;
@@ -320,7 +323,7 @@ export class Engine {
           at: now, lastRemind: now, seenPaused: s.state === 'paused', retried: true });
       }
     }
-    t.lastFilament = fil;
+    if (fil === true || fil === false) t.lastFilament = fil;   // keep the last real reading through offline/unknown
 
     // ---- Stall heuristic: progress frozen while "printing" ----
     if (s.state === 'printing') {
@@ -374,7 +377,7 @@ export class Engine {
 
     this.checkHeaters(s);
     this.checkIdlePeripherals(s);
-    t.prev = s;
+    t.prev = { ...s };   // own copy: the fleet's object may change after this
   }
 
   /**

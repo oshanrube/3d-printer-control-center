@@ -101,13 +101,16 @@ export class Fleet extends EventEmitter {
     vendor.on('update', () => this.recompute(p.id));
     vendor.start();
 
+    // Always emit a NEW state object: the engine keeps the previous one to spot transitions.
+    // Mutating it in place made "online -> offline" invisible, so a printer rebooting mid-print
+    // (Luffy + Nami, 2026-11-19 09:00, solar inverter switch-over) raised no offline alert and
+    // the power-loss watch never started.
     client.on('open', () => {
-      entry.state.online = true;
+      entry.state = { ...entry.state, online: true, updatedAt: Date.now() };
       this.emitState(p.id);
     });
     client.on('close', () => {
-      entry.state.online = false;
-      entry.state.state = 'offline';
+      entry.state = { ...entry.state, online: false, state: 'offline', updatedAt: Date.now() };
       entry.cache = {};
       this.emitState(p.id);
     });
