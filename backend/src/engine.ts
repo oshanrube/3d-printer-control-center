@@ -52,7 +52,7 @@ const PUSH_FOR: Partial<Record<EventType, boolean>> = {
 
 /** A print this engine paused because of a suspected failure; reminded about until it's dealt with. */
 interface PauseWatch {
-  kind: 'ai' | 'jam'; reason: string; filename: string | null;
+  kind: 'ai' | 'jam' | 'runout'; reason: string; filename: string | null;   // runout: the printer paused itself
   at: number;          // when the pause was requested
   lastRemind: number;  // last push about it
   seenPaused: boolean; // the printer actually reached "paused"
@@ -144,7 +144,7 @@ export class Engine {
     markPrintOk(printerId, s.filename);
     this.fleet.setFlags(printerId, { markedOk: true });
     this.fleet.setReference(printerId, null);
-    const watched = this.pauseWatch.has(printerId);
+    const watched = this.pauseWatch.has(printerId) && this.pauseWatch.get(printerId)!.kind !== 'runout';   // never resume a runout
     if (watched) this.savePauseWatch(printerId, null);
     // Creality's resume macro can take minutes to answer: don't wait; the live state shows the outcome.
     const resumed = watched && s.state === 'paused';
@@ -160,7 +160,7 @@ export class Engine {
 
   private savePauseWatch(id: number, w: PauseWatch | null) {
     if (w) this.pauseWatch.set(id, w); else this.pauseWatch.delete(id);
-    this.fleet.setFlags(id, { autoPaused: w ? w.reason : null });
+    this.fleet.setFlags(id, { autoPaused: w && w.kind !== 'runout' ? w.reason : null });
     try { kv.set(`autopause:${id}`, w ? JSON.stringify(w) : ''); } catch { /* best effort */ }
   }
 
@@ -169,7 +169,8 @@ export class Engine {
     const ok = (s.state === 'printing' || s.state === 'paused') && isPrintOk(s.printerId, s.filename);
     if (!!s.markedOk !== ok) this.fleet.setFlags(s.printerId, { markedOk: ok });
     const w = this.pauseWatch.get(s.printerId);
-    if ((s.autoPaused ?? null) !== (w?.reason ?? null)) this.fleet.setFlags(s.printerId, { autoPaused: w?.reason ?? null });
+    const flag = w && w.kind !== 'runout' ? w.reason : null;
+    if ((s.autoPaused ?? null) !== flag) this.fleet.setFlags(s.printerId, { autoPaused: flag });
     if (!w || !s.online || s.state === 'offline') return;
     const now = Date.now();
     const name = this.printerName(s.printerId);
@@ -179,12 +180,21 @@ export class Engine {
       if (!w.seenPaused) { w.seenPaused = true; this.savePauseWatch(s.printerId, w); }
       if (now - w.lastRemind < remindMs) return;
       w.lastRemind = now; this.savePauseWatch(s.printerId, w);
-      this.emit({
+      this.emit(w.kind === 'runout' ? {
+        printerId: s.printerId, printerName: name, type: 'pause_reminder', severity: 'critical',
+        title: `🧵 ${name} is still out of filament (${mins} min)`,
+        message: `Load filament and resume. The longer it waits, the more the part cools and shrinks, which leaves a visible seam or weak layer where it resumes.`,
+        filename: w.filename, actionTaken: null,
+      } : {
         printerId: s.printerId, printerName: name, type: 'pause_reminder', severity: 'critical',
         title: `⏸️ ${name} is still paused (${mins} min)`,
         message: `Paused because of: ${w.reason}. Check the camera, then cancel or resume the print. Heaters stay on while it's paused.`,
         filename: w.filename, actionTaken: null,
       });
+    } else if (s.state === 'printing' && !w.seenPaused && w.kind === 'runout') {
+      // The printer pauses itself on a runout (never send our own pause: that killed a print on
+      // 2026-11-16). Still printing a minute later: it didn't pause (or was resumed): stop watching.
+      if (now - w.at > 60_000) this.savePauseWatch(s.printerId, null);
     } else if (s.state === 'printing' && !w.seenPaused) {
       // The pause hasn't taken effect (yet). Re-send it once, and keep telling the owner.
       if (now - w.lastRemind < remindMs) return;
@@ -299,8 +309,16 @@ export class Engine {
       const alreadyPaused = s.state === 'paused' || !!this.fleet.client(s.printerId)?.pausesOnRunout;
       const action = alreadyPaused ? 'paused by the printer' : config.autoPauseOnRunout ? 'auto-paused' : undefined;
       mk('filament_runout', 'critical', `🧵 ${name} out of filament`,
-         `Filament runout detected on ${name}${alreadyPaused ? ': the printer paused the print. Load filament, then resume.' : action ? ' — auto-pausing.' : '.'}`, action);
+         `Filament runout detected on ${name}${alreadyPaused ? ': the printer paused the print. Load filament, then resume.' : action ? ' — auto-pausing.' : '.'}`
+         + (alreadyPaused || action ? ` I'll remind you every ${config.pauseRemindMin} min until it prints again.` : ''), action);
       if (!alreadyPaused && config.autoPauseOnRunout) this.fleet.client(s.printerId)?.pause().catch(() => {});
+      // Remind every PAUSE_REMIND_MIN until it prints again: a runout overnight sat for 6 h and the
+      // cooled part left a seam (Sanji, 2026-11-19). An existing auto-pause watch keeps priority.
+      if ((alreadyPaused || config.autoPauseOnRunout) && !this.pauseWatch.has(s.printerId)) {
+        const now = Date.now();
+        this.savePauseWatch(s.printerId, { kind: 'runout', reason: 'out of filament', filename: s.filename ?? null,
+          at: now, lastRemind: now, seenPaused: s.state === 'paused', retried: true });
+      }
     }
     t.lastFilament = fil;
 
