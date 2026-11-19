@@ -22,7 +22,7 @@ class OnicPrint extends Module
     {
         $this->name = 'onicprint';
         $this->tab = 'administration';
-        $this->version = '1.1.6';
+        $this->version = '1.2.0';
         $this->author = 'Oshan Rube';
         $this->need_instance = 0;
         $this->ps_versions_compliancy = ['min' => '8.0.0', 'max' => _PS_VERSION_];
@@ -77,7 +77,8 @@ class OnicPrint extends Module
             "CREATE TABLE IF NOT EXISTS {$t('product')} (id_product INT UNSIGNED NOT NULL, ignore_store_colour TINYINT(1) NOT NULL DEFAULT 0,
                 PRIMARY KEY (id_product)) $e",
             "CREATE TABLE IF NOT EXISTS {$t('recipe')} (id_product INT UNSIGNED NOT NULL, id_product_attribute INT UNSIGNED NOT NULL,
-                id_part INT UNSIGNED NOT NULL, qty INT NOT NULL DEFAULT 1, PRIMARY KEY (id_product, id_product_attribute, id_part)) $e",
+                id_part INT UNSIGNED NOT NULL, qty INT NOT NULL DEFAULT 1, colour VARCHAR(64) NOT NULL DEFAULT '',
+                PRIMARY KEY (id_product, id_product_attribute, id_part)) $e",
             "CREATE TABLE IF NOT EXISTS {$t('move')} (id_move INT UNSIGNED NOT NULL AUTO_INCREMENT, id_part INT UNSIGNED NOT NULL,
                 colour VARCHAR(64) NOT NULL DEFAULT '', delta INT NOT NULL, reason VARCHAR(32) NOT NULL, id_order INT UNSIGNED NULL,
                 ref VARCHAR(64) NOT NULL DEFAULT '', note VARCHAR(255) NOT NULL DEFAULT '', date_add DATETIME NOT NULL,
@@ -189,13 +190,19 @@ class OnicPrint extends Module
             $stock = OnicPrintInventory::stockMap();
             $partsJs = [];
             foreach (OnicPrintInventory::parts() as $p) {
-                $partsJs[] = ['id' => $p['id'], 'name' => $p['name'], 'material' => $p['material'],
-                    'onHand' => OnicPrintInventory::available($stock, $p['id'], $item['colour'])];
+                $byColour = [];
+                foreach ($stock as $k => $q) {
+                    if (strpos($k, $p['id'] . '|') === 0) {
+                        $byColour[substr($k, strlen($p['id'] . '|'))] = $q;
+                    }
+                }
+                $partsJs[] = ['id' => $p['id'], 'name' => $p['name'], 'material' => $p['material'], 'stock' => (object) $byColour];
             }
             $this->context->smarty->assign([
                 'input_id' => 'combination_form_onicprint_recipe',
                 'parts_json' => json_encode($partsJs, JSON_UNESCAPED_UNICODE),
                 'recipe_json' => json_encode($item['recipe']),
+                'colours_json' => json_encode(OnicPrintInventory::storeColours(), JSON_UNESCAPED_UNICODE),
                 'colour' => (string) $item['colour'],
             ]);
             $f->add('recipe', $T . 'HiddenType', ['required' => false, 'data' => json_encode($item['recipe'])]);

@@ -147,7 +147,7 @@ class OnicPrintInventory
         }
         $recipes = [];
         foreach (self::db()->executeS('SELECT * FROM ' . self::t('recipe') . ' ORDER BY id_part') ?: [] as $r) {
-            $recipes[$r['id_product'] . '-' . $r['id_product_attribute']][] = ['partId' => (int) $r['id_part'], 'qty' => (int) $r['qty']];
+            $recipes[$r['id_product'] . '-' . $r['id_product_attribute']][] = ['partId' => (int) $r['id_part'], 'qty' => (int) $r['qty'], 'colour' => (string) ($r['colour'] ?? '')];
         }
         $out = [];
         foreach (self::catalogue() as $r) {
@@ -164,7 +164,9 @@ class OnicPrintInventory
             }
             $printColour = $s ? (string) $s['print_colour'] : '';
             $colour = (!isset($ignore[$pid]) && $storeColour !== null) ? $storeColour : ($printColour !== '' ? $printColour : null);
-            $recipe = $recipes[$key] ?? [];
+            // Each line's colour: '' = the item's colour, '*' = any colour, else that colour (e.g. White
+            // nose parts on a Caramel Brown antler set). printColour = what it resolves to (null = any).
+            $recipe = array_map(fn ($l) => $l + ['printColour' => self::lineColour($colour, $l['colour'])], $recipes[$key] ?? []);
             $values = array_map(fn ($o) => $o['value'], $r['options']);
             $item = [
                 'productId' => $pid, 'combinationId' => $cid, 'reference' => (string) $r['reference'],
@@ -199,6 +201,12 @@ class OnicPrintInventory
         return $n;
     }
 
+    /** A recipe line's print colour: '' follows the item, '*' = any colour (null), else that colour. */
+    public static function lineColour(?string $itemColour, string $rule): ?string
+    {
+        return $rule === '*' ? null : ($rule !== '' ? $rule : $itemColour);
+    }
+
     /** Full sets the parts on hand allow (null when the item has no recipe). */
     public static function buildable(array $item, array $stock): ?int
     {
@@ -207,7 +215,8 @@ class OnicPrintInventory
         }
         $sets = PHP_INT_MAX;
         foreach ($item['recipe'] as $line) {
-            $sets = min($sets, intdiv(self::available($stock, $line['partId'], $item['colour']), max(1, $line['qty'])));
+            $colour = array_key_exists('printColour', $line) ? $line['printColour'] : $item['colour'];
+            $sets = min($sets, intdiv(self::available($stock, $line['partId'], $colour), max(1, $line['qty'])));
         }
 
         return $sets;
@@ -319,13 +328,14 @@ class OnicPrintInventory
             }
             $sold = (int) $line['product_quantity'];
             foreach ($item['recipe'] as $r) {
-                [$from, $short] = self::take($stock, $r['partId'], $item['colour'], $r['qty'] * $sold);
+                $lineColour = array_key_exists('printColour', $r) ? $r['printColour'] : $item['colour'];
+                [$from, $short] = self::take($stock, $r['partId'], $lineColour, $r['qty'] * $sold);
                 $note = "{$order->reference}: {$sold}x {$item['label']}";
                 foreach ($from as [$colour, $n]) {
                     self::adjust($r['partId'], $colour, -$n, 'sale', $id, 'order:' . $id, $note);
                 }
                 if ($short > 0) {   // sold more than the parts on hand (shared parts): goes negative, so it gets printed
-                    self::adjust($r['partId'], (string) $item['colour'], -$short, 'sale', $id, 'order:' . $id, $note . ' (not on hand)');
+                    self::adjust($r['partId'], (string) $lineColour, -$short, 'sale', $id, 'order:' . $id, $note . ' (not on hand)');
                 }
                 $touched = true;
             }
@@ -443,9 +453,10 @@ class OnicPrintInventory
         foreach ($lines as $l) {
             $part = (int) ($l['partId'] ?? 0);
             $qty = (int) ($l['qty'] ?? 0);
+            $colour = pSQL(mb_substr(trim((string) ($l['colour'] ?? '')), 0, 64));
             if ($part > 0 && $qty > 0) {
-                $db->execute('INSERT INTO ' . self::t('recipe') . " (id_product, id_product_attribute, id_part, qty) VALUES ($pid, $cid, $part, $qty)
-                    ON DUPLICATE KEY UPDATE qty = qty + VALUES(qty)");
+                $db->execute('INSERT INTO ' . self::t('recipe') . " (id_product, id_product_attribute, id_part, qty, colour) VALUES ($pid, $cid, $part, $qty, '$colour')
+                    ON DUPLICATE KEY UPDATE qty = qty + VALUES(qty), colour = VALUES(colour)");
             }
         }
     }

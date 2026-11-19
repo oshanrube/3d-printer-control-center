@@ -30,7 +30,7 @@ export interface StoreOption { group: string; value: string }
 export interface StoreItem {
   productId: number; combinationId: number; reference: string; productName: string; options: StoreOption[];
   colour: string | null; colourFromStore: boolean; hasStoreColour: boolean; ignoreStoreColour: boolean; defaultColour: string; label: string; storeQty: number; inStore: boolean; enabled: boolean; minQty: number; priority: number;
-  syncedAt: number | null; recipe: { partId: number; qty: number }[];
+  syncedAt: number | null; recipe: { partId: number; qty: number; colour?: string | null }[];
 }
 export interface SyncStatus { lastSyncAt: number | null; lastAttemptAt: number | null; lastError: string | null; items: number; reason: string | null; running: boolean }
 export interface PartFile {

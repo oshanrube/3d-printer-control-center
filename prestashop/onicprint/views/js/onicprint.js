@@ -88,7 +88,7 @@
   }
   function itemRow(i) {
     var short = isShort(i), recipe = i.recipe.length
-      ? i.recipe.map(function (r) { return '<span class="op-chip">' + r.qty + '× ' + esc(partName(r.partId)) + '</span>'; }).join('')
+      ? i.recipe.map(function (r) { return '<span class="op-chip">' + r.qty + '× ' + esc(partName(r.partId)) + ' <span class="op-dim">' + esc(r.printColour || 'any colour') + '</span></span>'; }).join('')
       : (i.managed ? '<span class="op-warn">No recipe</span>' : '');
     var build = i.buildable === null ? '<span class="op-dim">–</span>'
       : '<span class="op-pill ' + (i.buildable === 0 ? 'bad' : short ? 'warn' : 'good') + '">' + i.buildable + '</span>';
@@ -112,21 +112,32 @@
     S.stock.forEach(function (x) { if (x.partId === partId && (colour === null || x.colour === colour)) n += Math.max(0, x.qty); });
     return n;
   }
+  /** What a line's colour rule resolves to: '' = the item's colour, '*' = any (null), else that colour. */
+  function lineColour(it, rule) { return rule === '*' ? null : (rule ? rule : it.colour); }
   function recipeEditor() {
-    var e = ui.edit, it = item(e.k), colour = it.colour;
+    var e = ui.edit, it = item(e.k);
     var sets = null;
-    e.lines.forEach(function (l) { var n = Math.floor(avail(l.partId, colour) / Math.max(1, l.qty)); sets = sets === null ? n : Math.min(sets, n); });
+    e.lines.forEach(function (l) { var n = Math.floor(avail(l.partId, lineColour(it, l.colour)) / Math.max(1, l.qty)); sets = sets === null ? n : Math.min(sets, n); });
     var opts = function (sel) {
       return S.parts.map(function (p) {
         var taken = p.id !== sel && e.lines.some(function (l) { return l.partId === p.id; });
         return '<option value="' + p.id + '"' + (p.id === sel ? ' selected' : '') + (taken ? ' disabled' : '') + '>' + esc(p.name) + (p.material ? ' (' + esc(p.material) + ')' : '') + '</option>';
       }).join('');
     };
-    return '<div class="op-recipe"><table class="op-rtable"><thead><tr><th title="How many of this part go into one item">Qty</th><th></th><th title="A part printed by the 3D printers">Printed part</th><th class="num" title="Loose parts you have that this item can use (its colour, or every colour for an any-colour item)">On hand' + (colour ? ' (' + esc(colour) + ')' : '') + '</th><th></th></tr></thead><tbody>' +
+    var colourOpts = function (sel) {
+      return '<option value=""' + (sel === '' ? ' selected' : '') + '>Item colour (' + esc(it.colour || 'any') + ')</option>' +
+        '<option value="*"' + (sel === '*' ? ' selected' : '') + '>Any colour</option>' +
+        S.colours.map(function (c) { return '<option' + (sel === c ? ' selected' : '') + '>' + esc(c) + '</option>'; }).join('');
+    };
+    return '<div class="op-recipe"><table class="op-rtable"><thead><tr><th title="How many of this part go into one item">Qty</th><th></th>' +
+      '<th title="A part printed by the 3D printers">Printed part</th>' +
+      '<th title="Item colour = the store colour option (or the item\'s Print in choice); Any colour = whatever is loaded; or a fixed colour, e.g. White nose parts on a brown antler set">Colour</th>' +
+      '<th class="num" title="Loose parts you have in that colour (every colour for Any colour)">On hand</th><th></th></tr></thead><tbody>' +
       e.lines.map(function (l, n) {
         return '<tr><td><input type="number" min="1" class="form-control op-num" data-a="lqty" data-n="' + n + '" value="' + l.qty + '"></td><td class="op-dim">×</td>' +
           '<td><select class="form-control op-sel wide" data-a="lpart" data-n="' + n + '">' + opts(l.partId) + '</select></td>' +
-          '<td class="num"><b>' + avail(l.partId, colour) + '</b></td>' +
+          '<td><select class="form-control op-sel" data-a="lcolour" data-n="' + n + '">' + colourOpts(l.colour || '') + '</select></td>' +
+          '<td class="num"><b>' + avail(l.partId, lineColour(it, l.colour || '')) + '</b></td>' +
           '<td><button class="btn btn-link op-x" data-a="ldel" data-n="' + n + '" title="Remove this part">✕</button></td></tr>';
       }).join('') + '</tbody></table>' +
       (e.lines.length ? '' : '<div class="op-dim">No recipe yet: add the printed parts one item is made of.</div>') +
@@ -152,7 +163,7 @@
         (out ? '<span class="op-pill bad">' + out + ' out</span>' : '') + (sh - out > 0 ? '<span class="op-pill warn">' + (sh - out) + ' below min</span>' : '') + '<span class="op-sp"></span>' +
         (all[0].hasStoreColour ? '<label class="op-inline" data-stop="1"><input type="checkbox" data-a="ignorecolour" data-v="' + pid + '"' + (all[0].ignoreStoreColour ? '' : ' checked') + '> Print in the store colour</label>' : '') +
         (all.length > 1 ? '<button class="btn btn-link btn-sm" data-a="all" data-v="' + pid + '" data-on="1">Manage all</button><button class="btn btn-link btn-sm" data-a="all" data-v="' + pid + '" data-on="0">None</button>' : '') + '</div>';
-      if (open) html += '<table class="table op-table"><thead><tr><th title="Ticked = kept in stock with printed parts (the printers fill it up to its minimum)">✓</th><th title="The store combination (size, colour, ...)">Options</th><th title="The combination reference in the store">Reference</th><th class="num" title="Quantity the store shows now. ≠ means it differs from what the parts on hand allow (written when Printed stock is live)">Store</th><th class="num" title="Full sets the printed parts on hand allow. This becomes the store quantity">Can build</th><th class="num" title="Minimum to keep in stock; the printers fill up to this">Min</th><th title="Print order: High first, then out-of-stock items, then the rest up to their minimum">Priority</th><th title="The colour it is printed in: the store colour option, or the "print in" choice when the product has none (or ignores it)">Colour</th><th title="The printed parts that make one item">Recipe</th><th></th></tr></thead><tbody>' +
+      if (open) html += '<table class="table op-table"><thead><tr><th title="Ticked = kept in stock with printed parts (the printers fill it up to its minimum)">✓</th><th title="The store combination (size, colour, ...)">Options</th><th title="The combination reference in the store">Reference</th><th class="num" title="Quantity the store shows now. ≠ means it differs from what the parts on hand allow (written when Printed stock is live)">Store</th><th class="num" title="Full sets the printed parts on hand allow. This becomes the store quantity">Can build</th><th class="num" title="Minimum to keep in stock; the printers fill up to this">Min</th><th title="Print order: High first, then out-of-stock items, then the rest up to their minimum">Priority</th><th title="The item colour: the store colour option, or the Print in choice when the product has none (or ignores it). Recipe lines set to Item colour use it; a line can also be Any colour or a fixed colour.">Colour</th><th title="The printed parts that make one item">Recipe</th><th></th></tr></thead><tbody>' +
         rows.map(itemRow).join('') + '</tbody></table>';
       html += '</div>';
     });
@@ -172,7 +183,8 @@
     S.items.forEach(function (i) {
       if (!i.managed || !i.minQty) return;
       i.recipe.forEach(function (r) {
-        var t = target[r.partId] = target[r.partId] || {}, c = i.colour === null ? '*' : i.colour;
+        var lc = r.printColour !== undefined ? r.printColour : i.colour;
+        var t = target[r.partId] = target[r.partId] || {}, c = lc === null ? '*' : lc;
         t[c] = Math.max(t[c] || 0, r.qty * i.minQty);
       });
     });
@@ -255,12 +267,12 @@
     }
     else if (a === 'edit') {
       if (ui.edit && ui.edit.k === k) ui.edit = null;
-      else ui.edit = { k: k, lines: item(k).recipe.map(function (r) { return { partId: r.partId, qty: r.qty }; }) };
+      else ui.edit = { k: k, lines: item(k).recipe.map(function (r) { return { partId: r.partId, qty: r.qty, colour: r.colour || '' }; }) };
       render();
     }
     else if (a === 'ladd') {
       var free = S.parts.filter(function (p) { return !ui.edit.lines.some(function (l) { return l.partId === p.id; }); })[0];
-      if (free) { ui.edit.lines.push({ partId: free.id, qty: 1 }); render(); }
+      if (free) { ui.edit.lines.push({ partId: free.id, qty: 1, colour: '' }); render(); }
     }
     else if (a === 'ldel') { ui.edit.lines.splice(n, 1); render(); }
     else if (a === 'lsave') { var k2 = ui.edit.k, lines = ui.edit.lines; ui.edit = null; act('saveRecipe', merge(ids(k2), { lines: lines })); }
@@ -293,6 +305,7 @@
     else if (a === 'ignorecolour') act('saveProduct', { productId: +v, ignoreStoreColour: !t.checked });
     else if (a === 'lqty') { ui.edit.lines[n].qty = Math.max(1, +t.value || 1); render(); }
     else if (a === 'lpart') { ui.edit.lines[n].partId = +t.value; render(); }
+    else if (a === 'lcolour') { ui.edit.lines[n].colour = t.value; render(); }
     else if (a === 'stock') act('setStock', { partId: +v, colour: t.getAttribute('data-c'), qty: Math.max(0, +t.value || 0) });
     else if (a === 'pname' || a === 'pmat') {
       var p = S.parts.filter(function (x) { return x.id === +v; })[0];

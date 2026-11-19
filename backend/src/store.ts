@@ -140,7 +140,8 @@ export interface InvItem {
   productId: number; combinationId: number; reference: string; productName: string; label: string;
   options: { group: string; value: string; colour: boolean }[];
   storeColour: string | null; ignoreStoreColour: boolean; printColour: string; colour: string | null;
-  managed: boolean; minQty: number; priority: number; recipe: { partId: number; qty: number }[];
+  managed: boolean; minQty: number; priority: number;
+  recipe: { partId: number; qty: number; colour?: string; printColour?: string | null }[];   // colour: '' item, '*' any, else fixed
   storeQty: number; buildable: number | null;
 }
 export interface InvState {

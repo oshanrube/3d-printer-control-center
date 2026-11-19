@@ -158,8 +158,8 @@ function ItemsTab({ items, parts }: { items: StoreItem[] | null; parts: Part[] }
                       <td class="c-num"><span class={`stock ${isShort(i) ? 'short' : ''}`}>{i.storeQty}</span> / {i.minQty}
                         {isOut(i) ? <span class="pill pill-out">out</span> : isShort(i) ? <span class="pill pill-warn">−{i.minQty - i.storeQty}</span> : null}</td>
                       <td>{i.recipe.length
-                        ? <div class="opts">{i.recipe.map(r => <span class="opt part">{r.qty}× {partName(r.partId)}</span>)}
-                            <span class={`opt colour ${i.colour ? '' : 'any'}`}>{i.colour || 'any colour'}</span></div>
+                        ? <div class="opts">{i.recipe.map(r => { const c = r.colour !== undefined ? r.colour : i.colour;
+                            return <span class="opt part">{r.qty}× {partName(r.partId)} <span class="muted">{c || 'any colour'}</span></span>; })}</div>
                         : <span class="inv-warn small">No recipe</span>}</td>
                     </tr>
                   ))}</tbody>

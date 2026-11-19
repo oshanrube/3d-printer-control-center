@@ -51,6 +51,10 @@ db.exec(`DELETE FROM part_gcodes`);
 // Items whose store variant has no colour option get a colour chosen on the dashboard.
 if (!(db.prepare('PRAGMA table_info(store_items)').all() as any[]).some(c => c.name === 'priority'))
   db.exec(`ALTER TABLE store_items ADD COLUMN priority INTEGER NOT NULL DEFAULT 0`);   // 1 high, 0 normal, -1 low
+if (!(db.prepare('PRAGMA table_info(recipes)').all() as any[]).some(c => c.name === 'print_colour')) {
+  db.exec(`ALTER TABLE recipes ADD COLUMN print_colour TEXT`);         // the line's print colour (null = any), from the store
+  db.exec(`ALTER TABLE recipes ADD COLUMN colour_rule TEXT NOT NULL DEFAULT ''`);  // '' item colour, '*' any, else fixed
+}
 if (!(db.prepare('PRAGMA table_info(store_items)').all() as any[]).some(c => c.name === 'print_as'))
   db.exec(`ALTER TABLE store_items ADD COLUMN print_as TEXT`);   // the module's print colour (null = any)
 if (!(db.prepare('PRAGMA table_info(store_items)').all() as any[]).some(c => c.name === 'default_colour'))
@@ -143,7 +147,7 @@ function mirror(st: Awaited<ReturnType<typeof inventoryState>>) {
         options_json = excluded.options_json, store_qty = excluded.store_qty, in_store = 1, synced_at = excluded.synced_at, enabled = 1,
         min_qty = excluded.min_qty, priority = excluded.priority, default_colour = excluded.default_colour, print_as = excluded.print_as`);
     db.prepare('DELETE FROM recipes').run();
-    const addRecipe = db.prepare('INSERT OR REPLACE INTO recipes (product_id, combination_id, part_id, qty) VALUES (?, ?, ?, ?)');
+    const addRecipe = db.prepare('INSERT OR REPLACE INTO recipes (product_id, combination_id, part_id, qty, print_colour, colour_rule) VALUES (?, ?, ?, ?, ?, ?)');
     db.prepare('DELETE FROM store_products').run();
     const ignore = db.prepare('INSERT OR REPLACE INTO store_products (product_id, ignore_store_colour) VALUES (?, 1)');
     for (const i of st.items) {
@@ -151,7 +155,9 @@ function mirror(st: Awaited<ReturnType<typeof inventoryState>>) {
         options: JSON.stringify(i.options.map(o => ({ group: o.group, value: o.value }))),
         // Planning works from what the parts allow (the store shows the same once the module is live).
         qty: i.buildable ?? i.storeQty, at: now, minQty: i.minQty, priority: i.priority, printColour: i.printColour, colour: i.colour });
-      for (const r of i.recipe) addRecipe.run(i.productId, i.combinationId, r.partId, r.qty);
+      // Each line's own colour (e.g. White nose parts on a Caramel Brown antler set); older modules: the item's.
+      for (const r of i.recipe) addRecipe.run(i.productId, i.combinationId, r.partId, r.qty,
+        r.printColour !== undefined ? r.printColour : i.colour, r.colour ?? '');
       if (i.ignoreStoreColour) ignore.run(i.productId);
     }
     db.prepare('DELETE FROM part_stock').run();
@@ -186,7 +192,7 @@ function itemsWithRecipes() {
         productName: r.product_name, options, quantity: r.store_qty }),
       storeQty: r.store_qty, inStore: !!r.in_store, enabled: !!r.enabled, minQty: r.min_qty, priority: r.priority ?? 0, syncedAt: r.synced_at,
       recipe: recipes.filter(x => x.product_id === r.product_id && x.combination_id === r.combination_id)
-        .map(x => ({ partId: x.part_id, qty: x.qty })),
+        .map(x => ({ partId: x.part_id, qty: x.qty, colour: x.colour_rule === '*' ? null : (x.print_colour ?? r.print_as ?? null) })),
     };
   });
 }

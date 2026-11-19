@@ -218,15 +218,17 @@ export function plan(fleet: Fleet) {
     const targetSets = d.stage === 'out' ? 1 : d.x.r.min_qty;
     for (const line of d.x.recipe) {
       if (!parts.get(line.part_id)) continue;
-      const pc = `${line.part_id}|${d.x.colour ?? ''}`;
+      // The line's own colour (White nose parts on a brown antler set); before the store sent one: the item's.
+      const lineColour: string | null = line.colour_rule === '*' ? null : (line.print_colour ?? d.x.colour);
+      const pc = `${line.part_id}|${lineColour ?? ''}`;
       // An "any colour" item is also served by plates planned in a specific colour.
-      const alreadyPlanned = d.x.colour !== null ? (planned.get(pc) ?? 0)
+      const alreadyPlanned = lineColour !== null ? (planned.get(pc) ?? 0)
         : [...planned].reduce((n, [k, v]) => n + (k.startsWith(`${line.part_id}|`) ? v : 0), 0);
-      const extra = line.qty * targetSets - availableFor(line.part_id, d.x.colour) - alreadyPlanned;
+      const extra = line.qty * targetSets - availableFor(line.part_id, lineColour) - alreadyPlanned;
       if (extra <= 0) continue;
       planned.set(pc, (planned.get(pc) ?? 0) + extra);
-      const key = `${line.part_id}|${d.x.colour ?? ''}|${d.x.priority}|${d.stage}`;
-      if (!need.has(key)) need.set(key, { partId: line.part_id, colour: d.x.colour, qty: 0, forItems: [], stage: d.stage, priority: d.x.priority });
+      const key = `${line.part_id}|${lineColour ?? ''}|${d.x.priority}|${d.stage}`;
+      if (!need.has(key)) need.set(key, { partId: line.part_id, colour: lineColour, qty: 0, forItems: [], stage: d.stage, priority: d.x.priority });
       const n = need.get(key)!; n.qty += extra; if (!n.forItems.includes(d.x.label)) n.forItems.push(d.x.label);
     }
   }
