@@ -93,7 +93,7 @@ export interface PrinterReadiness {
   manualMaterial: string; manualColour: string;
 }
 
-function readiness(fleet: Fleet, s: LiveState, colours: Record<string, string>): PrinterReadiness {
+export function readiness(fleet: Fleet, s: LiveState, colours: Record<string, string>): PrinterReadiness {
   const st = settings(s.printerId);
   const model = fleet.model(s.printerId);
   const reported = fleet.spools(s.printerId);

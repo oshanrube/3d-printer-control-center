@@ -14,7 +14,7 @@ import { db, kv } from './db.js';
 import type { Fleet } from './fleet.js';
 import type { LiveState, PrinterEvent } from './types.js';
 import { HISTORY_KEY, inventoryLive, syncStore } from './inventory.js';
-import { activeJob, plan, takeParts } from './store-jobs.js';
+import { activeJob, colourMap, plan, readiness, takeParts } from './store-jobs.js';
 import { reportPrinted } from './store.js';
 import { listGcodes, printState, startPrint, uploadGcode } from './printer-files.js';
 import type { StoreOption } from './store.js';
@@ -88,8 +88,11 @@ async function loadOne(fleet: Fleet, report: Report, job: ReturnType<typeof plan
   const state = await printState(printer);
   if (!IDLE.includes(state)) return console.log(`[store] skip ${printer.name}: printer says ${state}`);
   const name = basename(file.filename).replace(/[^\w.() -]/g, '_');
+  // An any-colour plate prints in whatever is loaded: record that colour, so the plate also counts
+  // for items that need it (two White nose plates were planned twice, 2026-11-19).
+  const colour = job.colour ?? loadedColour(fleet, printer.id);
   const info = db.prepare(`INSERT INTO store_jobs (part_id, file_id, colour, units, printer_id, printer_file, status, for_items, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, 'loading', ?, ?)`).run(job.partId, file.id, job.colour ?? '', job.unitsPerPlate, printer.id, name,
+    VALUES (?, ?, ?, ?, ?, ?, 'loading', ?, ?)`).run(job.partId, file.id, colour, job.unitsPerPlate, printer.id, name,
     JSON.stringify(job.forItems), Date.now());
   const id = Number(info.lastInsertRowid);
   try {
@@ -117,8 +120,43 @@ async function loadOne(fleet: Fleet, report: Report, job: ReturnType<typeof plan
 
 const idleSince = new Map<number, number>();   // printing jobs whose printer came back idle (power cut)
 
+/**
+ * A print started by hand from a part's G-code file (not loaded by the queue) is adopted as a
+ * store job, so it counts as parts on the way and gets Complete / Failed like any other
+ * (owner, 2026-11-19: "count them as successful"). Colour = the single spool the printer has
+ * loaded (several, e.g. a K2 CFS: any colour).
+ */
+/** The colour name of the one spool a printer has loaded ('' when unknown or several, e.g. a K2 CFS). */
+function loadedColour(fleet: Fleet, printerId: number): string {
+  const s = fleet.getStates().find(x => x.printerId === printerId);
+  if (!s) return '';
+  const r = readiness(fleet, s, colourMap());
+  return r.spools.length === 1 ? (r.spools[0].colourName || '') : '';
+}
+
+function adopt(fleet: Fleet, report: Report, s: LiveState, file: string) {
+  const f = (db.prepare('SELECT * FROM part_files').all() as any[])
+    .find(x => basename(x.filename) === file || basename(x.filename).replace(/[^\w.() -]/g, '_') === file);
+  if (!f) return;
+  // Not again for this print: a job for this file that ended during it (marked Failed while still
+  // printing, or the queue's own job) would otherwise be re-created at once.
+  const printStart = Date.now() - Math.max(0, s.totalDuration || 0) * 1000 - 60_000;
+  if (db.prepare('SELECT 1 FROM store_jobs WHERE printer_id = ? AND printer_file = ? AND created_at > ?').get(s.printerId, file, printStart)) return;
+  const colour = loadedColour(fleet, s.printerId);
+  const name = fleet.client(s.printerId)?.printer.name || `Printer ${s.printerId}`;
+  const info = db.prepare(`INSERT INTO store_jobs (part_id, file_id, colour, units, printer_id, printer_file, status, for_items, created_at, loaded_at, started_at, note)
+    VALUES (?, ?, ?, ?, ?, ?, 'printing', '[]', ?, ?, ?, 'started by hand')`).run(f.part_id, f.id, colour, Math.max(1, f.units_per_plate), s.printerId, file, Date.now(), Date.now(), Date.now());
+  const part = partName(f.part_id);
+  console.log(`[store] job ${info.lastInsertRowid}: adopted ${file} on ${name} (started by hand, ${f.units_per_plate}x ${part}${colour ? ` ${colour}` : ''})`);
+  report({ printerId: s.printerId, printerName: name, type: 'store_job', severity: 'info',
+    title: `📦 ${name}: ${part} started by hand`,
+    message: `${f.units_per_plate}× ${part}${colour ? ` (${colour})` : ''} now counts as on the way. When it finishes, press Complete (adds them to the store) or Failed.`,
+    filename: file, actionTaken: 'adopted' });
+}
+
 export function track(fleet: Fleet, report: Report, s: LiveState, prev: string | undefined) {
   const j = activeJob(s.printerId);
+  if (!j && s.online && s.state === 'printing' && s.filename) { adopt(fleet, report, s, basename(s.filename)); return; }
   if (!j || !s.online || s.state === 'offline') return;
   const name = fleet.client(s.printerId)?.printer.name || `Printer ${s.printerId}`;
   const file = s.filename ? basename(s.filename) : '';
@@ -178,6 +216,13 @@ export function registerStoreDispatch(app: FastifyInstance, fleet: Fleet, report
   // An upload cut off by an app restart leaves its job "loading" forever, which also blocks
   // that printer (2026-11-17, Sanji). Mark such jobs interrupted; they are planned again.
   const stale = db.prepare(`UPDATE store_jobs SET status = 'cancelled', ended_at = ?, note = 'upload interrupted by an app restart' WHERE status = 'loading'`).run(Date.now());
+  // Jobs under way recorded as "any colour": they print in the loaded filament's colour (see loadOne).
+  setTimeout(() => {
+    for (const j of db.prepare(`SELECT id, printer_id FROM store_jobs WHERE colour = '' AND status IN ('loaded','printing','printed')`).all() as any[]) {
+      const c = loadedColour(fleet, j.printer_id);
+      if (c) { setJob(j.id, { colour: c }); console.log(`[store] job ${j.id}: colour set to ${c} (the filament loaded on that printer)`); }
+    }
+  }, 30_000);   // after the printers' spools are known
   if (stale.changes) console.log(`[store] ${stale.changes} interrupted upload(s) marked cancelled; they will be loaded again`);
   const prev = new Map<number, string>();
   fleet.on('state', (s: LiveState) => {
