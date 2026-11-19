@@ -138,6 +138,13 @@ export class WebrtcRelay {
   // all WebRTC cameras in a reconnect loop (2026-11-17). Backoff grows on repeated failures.
   private retryAt = new Map<number, number>();
   private failures = new Map<number, number>();
+  // Every page we've opened and not yet closed, and how many start() calls are mid-setup.
+  // sweep() closes any owned page that no record points at. Page setup takes seconds, and
+  // sweep/evict/restart could drop a record before rec.page was set, so its page was never
+  // closed and kept decoding: 414 Chromium processes (~22 GB) piled up in 2 h on 2026-11-19
+  // and froze the Pi.
+  private owned = new Set<Page>();
+  private startsInFlight = 0;
   available = true;
 
   async init() {
@@ -161,7 +168,7 @@ export class WebrtcRelay {
                // Every relay page but one is a background tab; don't throttle them.
                '--disable-background-timer-throttling', '--disable-renderer-backgrounding',
                '--disable-backgrounding-occluded-windows'],
-      }).then(b => { this.browser = b; b.on('disconnected', () => { this.browser = undefined; this.pages.clear(); }); return b; })
+      }).then(b => { this.browser = b; b.on('disconnected', () => { this.browser = undefined; this.launching = undefined; this.pages.clear(); this.owned.clear(); }); return b; })
         .catch(e => { this.launching = undefined; throw e; });
     }
     return this.launching;
@@ -207,8 +214,11 @@ export class WebrtcRelay {
     const now = Date.now();
     const rec: Rec = { page: undefined as any, lastFrameAt: 0, holdUntil: Math.max(holdUntil, now + GRACE_MS), starting: true, startedAt: now };
     this.pages.set(printer.id, rec);
+    this.startsInFlight++;
     try {
       const page = await browser.newPage();
+      this.owned.add(page);
+      page.once('close', () => this.owned.delete(page));
       rec.page = page;
       await page.exposeFunction('__frame', (b64: string) => { rec.lastFrame = Buffer.from(b64, 'base64'); rec.lastFrameAt = Date.now(); this.failures.set(printer.id, 0); });
       await page.exposeFunction('__err', (m: string) => { rec.error = m || 'error'; });
@@ -218,9 +228,13 @@ export class WebrtcRelay {
       await page.setContent(relayHtml(host, printer.webrtcPort || 8000), { waitUntil: 'load' });
       rec.startedAt = Date.now();
       rec.starting = false;
+      // Swept, evicted or replaced while we were setting up: nobody will close this page.
+      if (this.pages.get(printer.id) !== rec) { try { await page.close(); } catch { /* ignore */ } }
     } catch (e) {
       if (this.pages.get(printer.id) === rec) this.pages.delete(printer.id);
       try { await rec.page?.close(); } catch { /* ignore */ }
+    } finally {
+      this.startsInFlight--;
     }
   }
 
@@ -269,6 +283,15 @@ export class WebrtcRelay {
         this.pages.delete(id);
         try { await r.page?.close(); } catch { /* ignore */ }
       }
+    }
+    // Backstop: close owned pages no record points at. Skipped while a start() is mid-setup,
+    // since its page may not be linked to its record yet.
+    if (this.startsInFlight === 0 && this.owned.size > 0) {
+      const live = new Set<Page>();
+      for (const [, r] of this.pages) if (r.page) live.add(r.page);
+      const orphans = [...this.owned].filter(p => !live.has(p));
+      if (orphans.length) console.warn(`[webrtc-relay] closing ${orphans.length} orphaned page(s)`);
+      for (const p of orphans) { this.owned.delete(p); try { await p.close(); } catch { /* ignore */ } }
     }
   }
 
