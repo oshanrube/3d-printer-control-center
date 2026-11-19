@@ -22,7 +22,7 @@ class OnicPrint extends Module
     {
         $this->name = 'onicprint';
         $this->tab = 'administration';
-        $this->version = '1.2.0';
+        $this->version = '1.2.1';
         $this->author = 'Oshan Rube';
         $this->need_instance = 0;
         $this->ps_versions_compliancy = ['min' => '8.0.0', 'max' => _PS_VERSION_];
@@ -164,15 +164,6 @@ class OnicPrint extends Module
                 return;
             }
             $T = 'Symfony\Component\Form\Extension\Core\Type\\';
-            $parts = [];
-            foreach (OnicPrintInventory::parts() as $p) {
-                $parts[$p['name'] . ($p['material'] ? ' (' . $p['material'] . ')' : '')] = $p['id'];
-            }
-            $colours = ['Any colour' => ''];
-            foreach (OnicPrintInventory::storeColours() as $c) {
-                $colours[$c] = $c;
-            }
-            $usesStoreColour = $item['hasStoreColour'] && !$item['ignoreStoreColour'];
             $builder = $params['form_builder'];
             $builder->add('onicprint', $T . 'FormType', [
                 'label' => 'Printed stock', 'required' => false,
@@ -184,8 +175,6 @@ class OnicPrint extends Module
             $f->add('min_qty', $T . 'IntegerType', ['label' => 'Minimum in stock', 'required' => false, 'data' => $item['minQty'], 'attr' => ['min' => 0]]);
             $f->add('priority', $T . 'ChoiceType', ['label' => 'Print priority', 'required' => true, 'data' => $item['priority'],
                 'choices' => ['High' => 1, 'Normal' => 0, 'Low' => -1]]);
-            $f->add('print_colour', $T . 'ChoiceType', ['label' => 'Print in', 'required' => false, 'data' => $item['printColour'], 'choices' => $colours,
-                'help' => $usesStoreColour ? 'Not used: this combination is printed in its store colour (' . $item['storeColour'] . ').' : 'This combination has no colour of its own (or the product ignores it).']);
             // The recipe: one hidden JSON field, edited by a small widget (views/templates/hook/recipe_widget.tpl).
             $stock = OnicPrintInventory::stockMap();
             $partsJs = [];
@@ -225,8 +214,8 @@ class OnicPrint extends Module
             $pid = (int) (new Combination($cid))->id_product;
             OnicPrintInventory::saveItem($pid, $cid, [
                 'managed' => !empty($d['managed']), 'minQty' => (int) ($d['min_qty'] ?? 0),
-                'priority' => (int) ($d['priority'] ?? 0), 'printColour' => (string) ($d['print_colour'] ?? ''),
-            ]);
+                'priority' => (int) ($d['priority'] ?? 0),
+            ] + (isset($d['print_colour']) ? ['printColour' => (string) $d['print_colour']] : []));   // no longer in the dialog: keep the saved one
             $lines = json_decode((string) ($d['recipe'] ?? ''), true);
             if (is_array($lines)) {   // missing / unreadable: leave the recipe as it is
                 OnicPrintInventory::saveRecipe($pid, $cid, $lines);

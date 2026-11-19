@@ -45,7 +45,12 @@
   function part(id) { for (var i = 0; i < parts.length; i++) if (parts[i].id === id) return parts[i]; return null; }
   function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
   function save() {
-    input.value = JSON.stringify(rows.filter(function (r) { return r.partId && r.qty > 0; }).map(function (r) { return { partId: r.partId, qty: r.qty, colour: r.colour }; }));
+    var v = JSON.stringify(rows.filter(function (r) { return r.partId && r.qty > 0; }).map(function (r) { return { partId: r.partId, qty: r.qty, colour: r.colour }; }));
+    if (input.value !== v) {
+      input.value = v;
+      // PrestaShop enables the dialog's Save button on change events; a script-set value fires none.
+      if (!first) { input.dispatchEvent(new Event('input', { bubbles: true })); input.dispatchEvent(new Event('change', { bubbles: true })); }
+    }
     var sets = null;
     rows.forEach(function (r) { var p = part(r.partId); if (!p || !(r.qty > 0)) return; var n = Math.floor(onHand(p, r.colour) / r.qty); sets = sets === null ? n : Math.min(sets, n); });
     build.className = 'opr-build' + (sets === 0 ? ' zero' : '');
@@ -83,6 +88,8 @@
       if (free) { rows.push({ partId: free.id, qty: 1, colour: '' }); render(); var s = tbody.querySelectorAll('.opr-part'); s[s.length - 1].focus(); }
     }
   });
+  var first = true;
   render();
+  first = false;
 })();
 </script>
