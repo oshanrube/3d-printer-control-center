@@ -48,8 +48,12 @@
     var v = JSON.stringify(rows.filter(function (r) { return r.partId && r.qty > 0; }).map(function (r) { return { partId: r.partId, qty: r.qty, colour: r.colour }; }));
     if (input.value !== v) {
       input.value = v;
-      // PrestaShop enables the dialog's Save button on change events; a script-set value fires none.
-      if (!first) { input.dispatchEvent(new Event('input', { bubbles: true })); input.dispatchEvent(new Event('change', { bubbles: true })); }
+      // The product page enables the dialog's Save button from keyup/change listeners it puts on
+      // each non-hidden input when the dialog loads: not on this hidden field, nor on rows added
+      // later. So signal the change on the (invisible) text input that was there at load.
+      if (!first) [input, document.getElementById(input.id + '_editor')].forEach(function (el) {
+        if (el) { el.dispatchEvent(new Event('keyup', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); }
+      });
     }
     var sets = null;
     rows.forEach(function (r) { var p = part(r.partId); if (!p || !(r.qty > 0)) return; var n = Math.floor(onHand(p, r.colour) / r.qty); sets = sets === null ? n : Math.min(sets, n); });

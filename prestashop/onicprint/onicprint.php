@@ -22,7 +22,7 @@ class OnicPrint extends Module
     {
         $this->name = 'onicprint';
         $this->tab = 'administration';
-        $this->version = '1.2.1';
+        $this->version = '1.2.2';
         $this->author = 'Oshan Rube';
         $this->need_instance = 0;
         $this->ps_versions_compliancy = ['min' => '8.0.0', 'max' => _PS_VERSION_];
