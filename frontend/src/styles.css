@@ -84,6 +84,11 @@ main{margin-top:16px}
 .cam .noimg{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--text-faint);font-size:.82rem;background:var(--surface-3)}
 
 .actions{display:flex;gap:6px;margin-top:12px;flex-wrap:wrap}
+.confirm-row{align-items:center;padding:8px 10px;border:1px solid var(--accent);border-radius:10px;background:var(--accent-soft)}
+.confirm-row.confirm-cancel{border-color:var(--st-offline);background:rgba(239,68,68,.12)}
+.confirm-q{flex:1 1 100%;font-size:.85rem;font-weight:600}
+.btn-danger-solid{background:var(--st-offline);border-color:var(--st-offline);color:#fff}
+.act-err{flex:1 1 100%;font-size:.8rem;color:var(--st-offline)}
 .card-tools{position:absolute;top:10px;right:12px;display:flex;gap:4px;opacity:0;transition:opacity .15s}
 .card:hover .card-tools{opacity:1}
 @media(hover:none){.card-tools{opacity:1}}

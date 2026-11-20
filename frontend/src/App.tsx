@@ -9,6 +9,14 @@ import { enablePush, pushStatus } from './push';
 
 /** How long the print buttons stay disabled waiting for a pause/resume/cancel to take effect. */
 const ACTION_TIMEOUT_MS = 5 * 60_000;
+/** An unanswered in-card confirmation closes itself after this long. */
+const CONFIRM_TIMEOUT_MS = 15_000;
+type PrintAction = 'pause' | 'resume' | 'cancel';
+const CONFIRM_TEXT: Record<PrintAction, string> = {
+  pause: 'Pause this print?',
+  resume: 'Resume this print?',
+  cancel: "Cancel this print? This can't be undone.",
+};
 
 /* ---------- helpers ---------- */
 const pad = (n: number) => String(n).padStart(2, '0');
@@ -119,18 +127,26 @@ function PrinterCard({ printer, onEdit, toLabel, onLabelled, onLater, job, store
   const busy = useRef(false);
   // A confirmed pause/resume/cancel keeps the print buttons disabled until the printer
   // actually gets there (a second command on top can do harm: the 2026-11-16 double pause).
-  const [pending, setPending] = useState<{ a: 'pause' | 'resume' | 'cancel'; until: number } | null>(null);
-  const act = async (a: 'pause' | 'resume' | 'cancel') => {
+  const [pending, setPending] = useState<{ a: PrintAction; until: number } | null>(null);
+  // The action waiting for "Yes" in the card's own confirm row.
+  const [asking, setAsking] = useState<PrintAction | null>(null);
+  const [actErr, setActErr] = useState('');
+  const act = async (a: PrintAction) => {
     if (busy.current || pending) return;
-    const ask = { pause: `Pause the print on ${printer.name}?`, resume: `Resume the print on ${printer.name}?`,
-      cancel: `Cancel the print on ${printer.name}? This can't be undone.` }[a];
-    if (!confirm(ask)) return;
-    busy.current = true;
+    busy.current = true; setActErr('');
     setPending({ a, until: Date.now() + ACTION_TIMEOUT_MS });
     try { await api.action(printer.id, a); }
-    catch (e: any) { setPending(null); alert(`Couldn't ${a} ${printer.name}: ${e?.message || e}`); }
+    catch (e: any) { setPending(null); setActErr(`Couldn't ${a}: ${e?.message || e}`); }
     finally { busy.current = false; }
   };
+  // Drop an unanswered question after a while, or when the print moves on
+  // (e.g. "Pause?" still showing after the printer paused by itself).
+  useEffect(() => {
+    if (!asking) return;
+    const t = setTimeout(() => setAsking(null), CONFIRM_TIMEOUT_MS);
+    return () => clearTimeout(t);
+  }, [asking]);
+  useEffect(() => { setAsking(null); }, [st]);
   useEffect(() => {
     if (!pending) return;
     const done = pending.a === 'pause' ? st === 'paused'
@@ -220,12 +236,22 @@ function PrinterCard({ printer, onEdit, toLabel, onLabelled, onLater, job, store
         </div>
       )}
       {s?.online && (st === 'printing' || st === 'paused') && (
-        <div class="actions">
-          {st === 'printing'
-            ? <button class="btn btn-sm" disabled={!!pending} onClick={() => act('pause')}>{pending?.a === 'pause' ? '⏳ Pausing…' : '⏸ Pause'}</button>
-            : <button class="btn btn-sm btn-primary" disabled={!!pending} onClick={() => act('resume')}>{pending?.a === 'resume' ? '⏳ Resuming…' : '▶ Resume'}</button>}
-          <button class="btn btn-sm btn-danger" disabled={!!pending} onClick={() => act('cancel')}>{pending?.a === 'cancel' ? '⏳ Cancelling…' : '🛑 Cancel'}</button>
-        </div>
+        asking ? (
+          <div class={`actions confirm-row confirm-${asking}`}>
+            <span class="confirm-q">{CONFIRM_TEXT[asking]}</span>
+            <button class={`btn btn-sm ${asking === 'cancel' ? 'btn-danger-solid' : 'btn-primary'}`}
+              onClick={() => { const a = asking; setAsking(null); act(a); }}>Yes, {asking}</button>
+            <button class="btn btn-sm" onClick={() => setAsking(null)}>No</button>
+          </div>
+        ) : (
+          <div class="actions">
+            {st === 'printing'
+              ? <button class="btn btn-sm" disabled={!!pending} onClick={() => setAsking('pause')}>{pending?.a === 'pause' ? '⏳ Pausing…' : '⏸ Pause'}</button>
+              : <button class="btn btn-sm btn-primary" disabled={!!pending} onClick={() => setAsking('resume')}>{pending?.a === 'resume' ? '⏳ Resuming…' : '▶ Resume'}</button>}
+            <button class="btn btn-sm btn-danger" disabled={!!pending} onClick={() => setAsking('cancel')}>{pending?.a === 'cancel' ? '⏳ Cancelling…' : '🛑 Cancel'}</button>
+            {actErr && <span class="act-err">{actErr}</span>}
+          </div>
+        )
       )}
       {job && s?.online && <StoreJobStrip r={job} job={storeJob} storeColours={storeColours} onChange={onJob} />}
     </div>
