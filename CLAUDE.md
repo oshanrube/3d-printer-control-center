@@ -8,12 +8,13 @@ Repo: `oshanrube/3d-printer-control-center`, default branch **`master`**. The ol
 
 | ID | Name | IP | Model | Wi-Fi | Camera |
 |---|---|---|---|---|---|
-| 1 | K2 Plus | 10.0.68.21 | K2 Plus (F008) | RubeHomeAP | WebRTC only (1080p) |
+| 1 | Nico | 10.0.68.21 | K2 Plus (F008) | RubeHomeAP | WebRTC only (1080p) |
 | 2 | Roronoa Zoro | 10.0.68.47 | K1 family | RubeHomeIOT | MJPEG |
 | 3 | Sanji | 10.0.68.149 | K1C | RubeHomeAP | WebRTC (720p) |
 | 4 | Usopp | 10.0.68.167 | K1C | RubeHomeAP | WebRTC (720p) |
 | 5 | Nami | 10.0.68.232 | K1C | RubeHomeAP | WebRTC (720p) |
 | 6 | Mokey D. Luffy | 10.0.68.240 | K1C | RubeHomeIOT | MJPEG |
+| 7 | Chopper | 10.0.68.62 | K2 Plus (F008) | ? | WebRTC only |
 
 - **RubeHomeIOT has client isolation.** Phones on RubeHomeAP can't reach Luffy/Zoro directly, but the Pi (wired, `eth0` 10.0.68.53) reaches every printer. That's why everything goes through the backend.
 - Printer IDs come from the SQLite DB (seeded in `backend/src/index.ts` on first run; editable in the UI).
@@ -188,6 +189,7 @@ Compares a print with a **successful run of the same file at the same step**. Kl
 - `ws://<printer>:9999`: first message is a full snapshot, then deltas. Fields: `err {errcode,key,value}`, `state` (1 printing/preparing, 5 halted on error, 7 stopping, 4 stopped), `deviceState`, `model`, `printProgress`, targets. `creality.ts` never sends anything.
 - **Error 509 = "The chamber temperature is too high, turn off the camera"** (confirmed 2026-11-17 from Luffy's `master-server.log`, found by the Qwen worker and verified): at a cavity temperature of ~61°C the 2.x firmware runs `/usr/bin/chamber_cam_power.sh off` and reports errcode 500 / key 509 every second while it stays that hot. Only Luffy (2.3.5.34, ABS, hot chamber) raises it; it appears 25-30 min into prints and clears when the chamber cools. While it is active the printer's camera is off, so the dashboard camera, AI detection and dataset frames for Luffy are blind. **Luffy is reachable by SSH from the Pi with `/root/.ssh/printers_ecdsa`** (ECDSA: its Dropbear 2019.78 doesn't support ed25519); read-only use unless the owner asks.
 - **Error 2839 / Klipper `key839`** (K2) = "filament error, no filament detected at box extrude position", values `[box, slot]`: a CFS slot ran out and auto-refill found no slot with the same filament ("no identical supplies"), so the K2 paused. Shown as "Out of filament ... (CFS box 1, slot A)" with a 🧵 out-of-filament alert title. The K2's own runout sensor is disabled, so this is its runout signal.
+- **K2 filament-box (CFS) errors, `key836`-`key865` / firmware 28xx** (from Nico's and Chopper's klippy.log, 2026-11-16..20): each one runs the K2's PAUSE macro at once; values are `[box, slot]` where given. Readable names and hints for all 24 codes seen on the K2s are in `errors.ts` (`KLIPPER_KEYS`, `pauses: true` for the box ones), and the alert says "The printer pauses the print for this" with a 📦 title. Most frequent: `key846` "empty printing, box speed is smaller than extruder" (147 times on Nico in 4 days), `key111` "Extrude below minimum temp" (resume after cooling), `key844` "pneumatic joint abnormal". Both K2s have no MJPEG streamer (only :80, :4408, :8000, :9999 open; `:4408/webcam/` 502).
 - **Error 104** = `ai detect discover foreign objects`: the pre-print foreign-object check (`AiDetectForeignBodyRun` in `master-server.log`, after the camera-dirty check) found something on the bed with confidence ≥ `sundriesTruth` 62.5% in two consecutive photos (`ai result; label = 0, prob, obj_rect_*`). The flagged photo is `/usr/data/ai_image/main_processed_ai_foreign_objects_mode.jpg`. Sanji 2026-11-14/15: five halts, all at the same small white object on the front-centre edge of the bed (x≈540, y≈613 in the 1280×720 image, prob 0.69-0.71); it moved with the bed, so it was on the plate, not the lens.
 - **Error 521** = `ai detect camera dirty objects`: the pre-print AI camera check saw something on the bed. The screen shows it as "unknown exception".
 - Printer logs: Creality services in `/usr/data/creality/userdata/log/` (`master-server.log` covers print control and fault codes; `app-server.log` covers cloud state and `err`). Klipper and Moonraker logs are in `/usr/data/printer_data/logs/`. Timestamps are local time.

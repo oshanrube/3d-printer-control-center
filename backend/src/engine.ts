@@ -4,7 +4,7 @@ import { config } from './config.js';
 import { eventsRepo, printsRepo, kv } from './db.js';
 import { captureForDataset } from './camera.js';
 import { sendPush, type PushResult } from './push.js';
-import { describeKlipperError } from './errors.js';
+import { describeKlipperError, klipperKeyPauses, mirroredKey } from './errors.js';
 import { isPrintOk, markPrintOk } from './print-ok.js';
 import type { Fleet } from './fleet.js';
 import type { LiveState, PrinterEvent, EventType, Severity } from './types.js';
@@ -361,11 +361,18 @@ export class Engine {
           // printer has stopped. A fault while the print carries on normally (e.g. the
           // K1C's AI camera flagging something, like error 509 on Luffy) is a warning.
           const stillPrinting = cur.state === 'printing';   // Klipper is still printing
+          // Mirrored Klipper errors (2xxx): the K2's filament-box ones make it pause at once,
+          // a moment after the firmware reports them, so the print is not "running normally".
+          const key = mirroredKey(code);
+          const pauses = klipperKeyPauses(key);
           const heat = !stillPrinting && cur.state !== 'paused' && (cur.bedTarget > 0 || cur.extruderTarget > 0)
             ? ` Heaters are still on (bed ${cur.bedTarget}°C, nozzle ${cur.extruderTarget}°C).` : '';
-          const context = stillPrinting ? ' The print is still running normally. Check the camera.' : '';
-          this.emit({ printerId: s.printerId, printerName: name, type: 'printer_fault', severity: stillPrinting ? 'warning' : 'critical',
-                      title: code === 2839 ? `🧵 ${name} out of filament (CFS)` : `⚠️ ${name}: error ${code}`, message: `${cur.fault.description}.${heat}${context}`,
+          const context = pauses ? (cur.state === 'paused' ? ' The print is paused.' : ' The printer pauses the print for this.')
+            : stillPrinting ? (key ? ' The print is still running: check the printer.' : ' The print is still running normally. Check the camera.') : '';
+          const title = code === 2839 ? `🧵 ${name} out of filament (CFS)`
+            : pauses ? `📦 ${name}: filament box problem (${code})` : `⚠️ ${name}: error ${code}`;
+          this.emit({ printerId: s.printerId, printerName: name, type: 'printer_fault', severity: stillPrinting && !pauses ? 'warning' : 'critical',
+                      title, message: `${cur.fault.description.replace(/\.$/, '')}.${heat}${context}`,
                       filename: cur.filename ?? null, actionTaken: null });
         }, FAULT_SETTLE_MS);
       } else if (!code && t.lastFaultCode && t.faultAlerted) {
@@ -503,7 +510,7 @@ export class Engine {
       const lead = t.vendorBusySince
         ? `The printer has been stuck preparing a print for ${Math.round((now - t.vendorBusySince) / 60_000)} min with heaters on (${heaters}).`
         : `Heaters have been on for ${Math.round(mins)} min with nothing printing (${heaters}).`;
-      const why = s.fault ? ` The printer is showing error ${s.fault.code}: ${s.fault.description}.`
+      const why = s.fault ? ` The printer is showing error ${s.fault.code}: ${s.fault.description.replace(/\.$/, '')}.`
                 : paused ? ' The print is paused.' : '';
       ev('heaters_idle', 'warning', `🔥 ${name}: heaters on, not printing`, `${lead}${why}` +
          (autoOff ? ` They will be turned off automatically in ${Math.max(1, Math.round(config.idleHeaterOffMin - mins))} min.` : ''));
