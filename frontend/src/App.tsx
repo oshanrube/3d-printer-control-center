@@ -7,6 +7,9 @@ import type { PrinterReadiness, StoreJob } from './api';
 import { useStore } from './store';
 import { enablePush, pushStatus } from './push';
 
+/** How long the print buttons stay disabled waiting for a pause/resume/cancel to take effect. */
+const ACTION_TIMEOUT_MS = 5 * 60_000;
+
 /* ---------- helpers ---------- */
 const pad = (n: number) => String(n).padStart(2, '0');
 function fmtDur(sec?: number | null) {
@@ -114,12 +117,29 @@ function PrinterCard({ printer, onEdit, toLabel, onLabelled, onLater, job, store
   const progressShown = s?.preparing ? 0 : (s?.progress || 0);
   const [showRef, setShowRef] = useState(false);
   const busy = useRef(false);
+  // A confirmed pause/resume/cancel keeps the print buttons disabled until the printer
+  // actually gets there (a second command on top can do harm: the 2026-11-16 double pause).
+  const [pending, setPending] = useState<{ a: 'pause' | 'resume' | 'cancel'; until: number } | null>(null);
   const act = async (a: 'pause' | 'resume' | 'cancel') => {
-    if (busy.current) return; busy.current = true;
-    try { if (a === 'cancel' && !confirm('Cancel this print?')) return; await api.action(printer.id, a); }
-    catch (e: any) { alert(`Couldn't ${a} ${printer.name}: ${e?.message || e}`); }
+    if (busy.current || pending) return;
+    const ask = { pause: `Pause the print on ${printer.name}?`, resume: `Resume the print on ${printer.name}?`,
+      cancel: `Cancel the print on ${printer.name}? This can't be undone.` }[a];
+    if (!confirm(ask)) return;
+    busy.current = true;
+    setPending({ a, until: Date.now() + ACTION_TIMEOUT_MS });
+    try { await api.action(printer.id, a); }
+    catch (e: any) { setPending(null); alert(`Couldn't ${a} ${printer.name}: ${e?.message || e}`); }
     finally { busy.current = false; }
   };
+  useEffect(() => {
+    if (!pending) return;
+    const done = pending.a === 'pause' ? st === 'paused'
+      : pending.a === 'resume' ? st === 'printing'
+      : st !== 'printing' && st !== 'paused';
+    if (done || !s?.online || st === 'error') { setPending(null); return; }
+    const t = setTimeout(() => setPending(null), Math.max(0, pending.until - Date.now()));
+    return () => clearTimeout(t);
+  }, [pending, st, s?.online]);
   const active = st === 'printing' || st === 'paused';
   // A detector is worried about this print: offer "it's fine" (e.g. a different filament colour).
   const concern = !!s && active && !s.markedOk
@@ -202,9 +222,9 @@ function PrinterCard({ printer, onEdit, toLabel, onLabelled, onLater, job, store
       {s?.online && (st === 'printing' || st === 'paused') && (
         <div class="actions">
           {st === 'printing'
-            ? <button class="btn btn-sm" onClick={() => act('pause')}>⏸ Pause</button>
-            : <button class="btn btn-sm btn-primary" onClick={() => act('resume')}>▶ Resume</button>}
-          <button class="btn btn-sm btn-danger" onClick={() => act('cancel')}>🛑 Cancel</button>
+            ? <button class="btn btn-sm" disabled={!!pending} onClick={() => act('pause')}>{pending?.a === 'pause' ? '⏳ Pausing…' : '⏸ Pause'}</button>
+            : <button class="btn btn-sm btn-primary" disabled={!!pending} onClick={() => act('resume')}>{pending?.a === 'resume' ? '⏳ Resuming…' : '▶ Resume'}</button>}
+          <button class="btn btn-sm btn-danger" disabled={!!pending} onClick={() => act('cancel')}>{pending?.a === 'cancel' ? '⏳ Cancelling…' : '🛑 Cancel'}</button>
         </div>
       )}
       {job && s?.online && <StoreJobStrip r={job} job={storeJob} storeColours={storeColours} onChange={onJob} />}
