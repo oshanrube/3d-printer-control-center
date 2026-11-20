@@ -10,8 +10,8 @@ Repo: `oshanrube/3d-printer-control-center`, default branch **`master`**. The ol
 |---|---|---|---|---|---|
 | 1 | Nico | 10.0.68.21 | K2 Plus (F008) | RubeHomeAP | WebRTC only (1080p) |
 | 2 | Roronoa Zoro | 10.0.68.47 | K1 family | RubeHomeIOT | MJPEG |
-| 3 | Sanji | 10.0.68.149 | K1C | RubeHomeAP | WebRTC (720p) |
-| 4 | Usopp | 10.0.68.167 | K1C | RubeHomeAP | WebRTC (720p) |
+| 3 | Sanji | 10.0.68.149 | K1C | RubeHomeAP | MJPEG (since 2026-11-20; WebRTC still on) |
+| 4 | Usopp | 10.0.68.167 | K1C | RubeHomeAP | MJPEG (since 2026-11-20; WebRTC still on) |
 | 5 | Nami | 10.0.68.232 | K1C | RubeHomeAP | WebRTC (720p) |
 | 6 | Mokey D. Luffy | 10.0.68.240 | K1C | RubeHomeIOT | MJPEG |
 | 7 | Chopper | 10.0.68.62 | K2 Plus (F008) | ? | WebRTC only |
@@ -112,6 +112,7 @@ Stack: Fastify 4, @fastify/websocket 8, better-sqlite3 11, web-push, ws, puppete
   - **Self-healing:** a page whose connection fails/closes, or that produces no frame within 20 s or stops producing frames for 15 s, is rebuilt on the next request. (Before this, a page whose connection dropped stayed open forever while the dashboard kept polling, and the camera showed 502 until a restart.)
   - Capture must be **timer-driven**: `requestVideoFrameCallback` doesn't fire in background tabs (every relay page but one). Background throttling is disabled via Chromium flags.
   - **No hardware decode:** the RK3566 VPU is only exposed through Rockchip's vendor MPP (`/dev/mpp_service`), which Chromium can't use (needs VAAPI or upstream V4L2). It would need a mainline kernel.
+- **MJPEG on the 1.x K1Cs (since 2026-11-20, owner's go-ahead):** firmware 1.3.5.22 runs the same camera stack as 2.x: `cam_app` owns the camera and shares frames through memfd, and `webrtc_local` reads them. `mjpg_streamer` + `input_memfd.so` are installed, but Creality commented out the main camera's streamer lines in `/usr/bin/auto_uvc.sh` (start at lines 127-130, stop at 187). On Sanji and Usopp those 5 lines are uncommented (original backed up as `/usr/data/auto_uvc.sh.orig-20261120`; `/` is an overlay, so a firmware update/factory reset restores it), and the streamer was started by hand with the same command. **WebRTC keeps working alongside** (both read the memfd). MJPEG is full 1280x720 in ~0.1 s vs the relay's 800x450 at ~1 s; ~3% printer CPU at 1 frame/s. Dashboard `cameraType` for Sanji/Usopp = `mjpeg`. Nami needs the Pi's key first. SSH to Sanji/Usopp: `/root/.ssh/printers_ecdsa`. Not yet confirmed: that the edited script starts the streamer by itself after a reboot.
 - **MJPEG printers** (Luffy, Zoro): `mjpg_streamer` on `:8080` (`/usr/bin/mjpg_streamer -i input_memfd.so -t 0 -o output_http.so -w /usr/share/mjpg-streamer/www/ -p 8080`), and the backend polls snapshots. The K1Cs could in principle run this too, but that was dropped in favour of the universal WebRTC relay.
 - Each printer allows a limited number of WebRTC viewers, so while the relay is watching, the Creality app may not get a stream (and vice versa).
 
