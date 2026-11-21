@@ -10,7 +10,9 @@ import type { Printer } from './types.js';
  *   /keyframe           the latest keyframe (SPS+PPS+IDR, ~40 KB, once a second)
  *   /?action=snapshot   a JPEG decoded on the printer, on demand
  *
- * Live viewing: keyframes are decoded here by one long-running ffmpeg per printer
+ * When the printer's k2cam encodes on the SoC's video engine (snapshot header
+ * `X-Encoder: hw`, ~20 ms per frame on the printer), live view simply takes its JPEGs.
+ * Otherwise keyframes are decoded here by one long-running ffmpeg per printer
  * (no per-frame start-up), only while someone is watching; it stops when idle.
  * Dataset/AI frames: reuse a fresh live frame, else ask the printer for a snapshot,
  * so an unwatched camera costs the Pi nothing.
@@ -108,8 +110,40 @@ setInterval(() => {
   for (const [id, d] of decoders) if (Date.now() - d.lastUse > IDLE_MS) { d.stop(); decoders.delete(id); }
 }, 10_000).unref();
 
-/** Live view: decoded on the Pi from the printer's keyframes. */
+// Printers whose k2cam encodes JPEGs on the SoC's video engine (X-Encoder: hw): live view
+// takes their JPEGs directly and the Pi decodes nothing. Re-checked every 10 min.
+const hwPrinters = new Map<number, { hw: boolean; at: number }>();
+const lastHw = new Map<number, { jpg: Buffer; at: number; busy?: Promise<Buffer | null> }>();
+
+async function printerSnapshot(printer: Printer, timeoutMs: number): Promise<{ jpg: Buffer; hw: boolean } | null> {
+  const res = await fetch(`http://${host(printer)}:${PORT}/?action=snapshot`, { signal: AbortSignal.timeout(timeoutMs) }).catch(() => null);
+  if (!res || !res.ok) return null;
+  const jpg = Buffer.from(await res.arrayBuffer());
+  const hw = res.headers.get('x-encoder') === 'hw';
+  hwPrinters.set(printer.id, { hw, at: Date.now() });
+  return jpg.length > 100 ? { jpg, hw } : null;
+}
+
+/** Live view: the printer's hardware JPEGs when it has them, else keyframes decoded on the Pi. */
 export async function k2LiveFrame(printer: Printer): Promise<Buffer | null> {
+  const known = hwPrinters.get(printer.id);
+  if (!known || known.hw || Date.now() - known.at > 600_000) {
+    let c = lastHw.get(printer.id);
+    if (c && Date.now() - c.at < FRESH_MS) return c.jpg;
+    if (!c?.busy) {
+      const p = printerSnapshot(printer, 5_000).then(r => {
+        if (r?.hw) { lastHw.set(printer.id, { jpg: r.jpg, at: Date.now() }); return r.jpg; }
+        lastHw.delete(printer.id);
+        return null;
+      });
+      c = { jpg: c?.jpg ?? Buffer.alloc(0), at: c?.at ?? 0, busy: p };
+      lastHw.set(printer.id, c);
+      p.finally(() => { const cur = lastHw.get(printer.id); if (cur?.busy === p) cur.busy = undefined; });
+    }
+    const jpg = await c.busy!;
+    if (jpg) return jpg;
+    if (hwPrinters.get(printer.id)?.hw) return null;   // hardware printer, just no frame right now
+  }
   let d = decoders.get(printer.id);
   if (!d) { d = new Decoder(printer); decoders.set(printer.id, d); }
   return d.get();
@@ -120,12 +154,11 @@ export async function k2LiveFrame(printer: Printer): Promise<Buffer | null> {
  * otherwise one JPEG decoded on the printer, so the Pi does no work for it.
  */
 export async function k2Capture(printer: Printer): Promise<Buffer | null> {
+  const c = lastHw.get(printer.id);
+  if (c && c.jpg.length && Date.now() - c.at < 5_000) return c.jpg;
   const d = decoders.get(printer.id);
   if (d?.frame && Date.now() - d.frameAt < 5_000) return d.frame;
-  const res = await fetch(`http://${host(printer)}:${PORT}/?action=snapshot`, { signal: AbortSignal.timeout(12_000) }).catch(() => null);
-  if (!res || !res.ok) return null;
-  const b = Buffer.from(await res.arrayBuffer());
-  return b.length > 100 ? b : null;
+  return (await printerSnapshot(printer, 12_000))?.jpg ?? null;
 }
 
 export function stopK2Decoders() { for (const d of decoders.values()) d.stop(); decoders.clear(); }

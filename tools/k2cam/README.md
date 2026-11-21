@@ -53,9 +53,12 @@ serves HTTP on **:8080** (the port the K2's nginx already proxies as `/webcam/`,
 - `GET /status`: JSON (subscribed, keyframe seq/bytes/age, frames, snapshots made)
 Measured on Chopper mid-print: k2cam ~0% CPU, 0.8 MB RSS.
 
-Build and install (from the Pi; nothing else on the printer changes):
+Build and install (from the Pi; nothing else on the printer changes). Since the hardware
+encoder (below) k2cam `dlopen`s the printer's CedarC libraries, so it is linked dynamically
+against glibc 2.28 (Debian buster's cross compiler; the K2 has 2.29); `cedar_hw.c` is
+included by `k2cam.c`:
 ```
-arm-linux-gnueabihf-gcc -O2 -Wall -Wextra -static -o k2cam k2cam.c
+arm-linux-gnueabihf-gcc -O2 -Wall -Wextra -o k2cam k2cam.c -ldl -lpthread
 K="ssh -i /root/.ssh/printers_ed25519 -o IdentitiesOnly=yes root@<k2-ip>"
 $K "cat > /usr/bin/k2cam && chmod 755 /usr/bin/k2cam" < k2cam
 $K "cat > /etc/init.d/k2cam && chmod 755 /etc/init.d/k2cam && /etc/init.d/k2cam enable && /etc/init.d/k2cam start" < k2cam.init
@@ -98,3 +101,23 @@ printer (`/usr/lib`, base image `/rom/usr/lib`). `cedartest.c` drives them via `
   Run: `cedartest kf0.h264,kf1.h264,kf2.h264 <runs> [out.nv21|""] [framePkg=1] [aud=0] [noB=0]`.
 Next: hardware JPEG encode (`libvencoder`, `VideoEncCreate` with the JPEG codec) so k2cam
 can serve JPEGs with almost no CPU.
+
+## Hardware JPEG in k2cam (live on Chopper since 2026-11-21)
+`cedar_hw.c`: hardware decode (above) + `libvencoder` JPEG (`VideoEncCreate(VENC_CODEC_JPEG)`,
+quality via `VENC_IndexParamJpegQuality` 0x200, `VideoEncInit` with input 1920x1080 stride 1920
+NV21 = `VENC_PIXEL_YVU420SP` and **nDstWidth/nDstHeight 1280x720: the encoder scales in
+hardware**; `AllocInputBuffer` -> `GetOneAllocInputBuffer` -> copy Y/C -> `FlushCacheAllocInputBuffer`
+-> `AddOneInputBuffer` -> `VideoEncodeOneFrame` -> `GetOneBitstreamFrame` (full JPEG, ff d8)).
+Test build: `-DCEDAR_HW_TEST -o hwjpegtest cedar_hw.c -ldl`.
+- ~20 ms per 720p JPEG, ~15 ms CPU incl. start-up (ffmpeg on the printer: ~1100 ms).
+- k2cam runs it in a worker thread while snapshots are being asked for (60 s after the last
+  request; the AI's 10 s checks keep it on during prints) and answers from memory:
+  3-minute soak at 1 request/s on idle Chopper: 180/180 hardware JPEGs, median 14 ms,
+  k2cam 2.7% of one core, 3 MB RSS, kernel log clean. Whole printer 42% vs 37% busy
+  (2 cores) with the pipeline on vs off. Load average rises because threads waiting on the
+  engine's interrupt count as load; that is not CPU.
+- Falls back to the ffmpeg snapshot if the engine can't be opened or fails (`-n` forces it).
+  `/status` has `hw`, `hw_active`, `hw_jpegs`; snapshots carry `X-Encoder: hw|ffmpeg`.
+- The Pi (`backend/src/k2cam.ts`) takes the printer's JPEGs for live view when it reports
+  `X-Encoder: hw` (dashboard median ~30 ms, no ffmpeg on the Pi), else decodes keyframes itself.
+- Previous ffmpeg-only binary kept on Chopper as `/mnt/UDISK/k2cam.ffmpeg-only.bak`.

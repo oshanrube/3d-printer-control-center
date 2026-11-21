@@ -8,9 +8,15 @@
  *   GET /?action=snapshot    JPEG, decoded on demand by the printer's ffmpeg
  *                            (nice 19, one at a time, cached per keyframe)
  *   GET /status              JSON
- * Nothing is decoded unless a snapshot is asked for. Single-threaded poll loop.
+ * Nothing is decoded unless a snapshot is asked for.
  *
- * Usage: k2cam [-p port=8080] [-s WxH=1280x720] [-i stationId=9001]
+ * Snapshots use the SoC's video engine when it works (cedar_hw.c: hardware H.264 decode,
+ * scale and JPEG, ~20 ms and ~15 ms CPU per frame): a worker thread then turns every
+ * keyframe into a JPEG while snapshots are being asked for (60 s after the last one), so a
+ * request is answered from memory. Otherwise (or after a hardware error) the printer's
+ * ffmpeg decodes one keyframe per request, as before.
+ *
+ * Usage: k2cam [-p port=8080] [-s WxH=1280x720] [-i stationId=9001] [-q jpegQuality=80] [-n (no hardware)]
  */
 #include <errno.h>
 #include <fcntl.h>
@@ -29,6 +35,11 @@
 #include <netinet/tcp.h>
 #include <time.h>
 #include <unistd.h>
+#include <pthread.h>
+
+#include "cedar_hw.c"
+
+static void hw_feed(void);
 
 #define DELIVERY_PATH "/tmp/delivery_socket100"
 #define TOPIC_H264 10000
@@ -40,6 +51,7 @@
 
 static int port = 8080, station = 9001;
 static char size[32] = "1280x720";
+static int jpeg_quality = 80, use_hw = 1;
 
 static int64_t now_ms(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (int64_t)t.tv_sec * 1000 + t.tv_nsec / 1000000; }
 
@@ -83,6 +95,7 @@ static void d_message(uint32_t type, const uint8_t *p, uint32_t n) {
   if (!is_keyframe(p, n)) return;
   uint8_t *c = realloc(kf, n); if (!c) return;
   kf = c; memcpy(kf, p, n); kf_len = n; kf_seq++; kf_at = now_ms();
+  hw_feed();
 }
 
 static void d_read(void) {
@@ -110,6 +123,44 @@ static void d_read(void) {
 static pid_t snap_pid = 0; static int64_t snap_started; static uint32_t snap_seq;
 static uint8_t *jpg; static uint32_t jpg_len, jpg_seq; static int64_t jpg_at;
 static uint64_t snaps_made;
+
+/* ---- hardware pipeline (worker thread) ---- */
+static int hw_ok;                         /* hardware opened and not failed */
+static int64_t hw_active_until;          /* feed keyframes until then (extended by snapshot requests) */
+static pthread_mutex_t hw_mu = PTHREAD_MUTEX_INITIALIZER; static pthread_cond_t hw_cv = PTHREAD_COND_INITIALIZER;
+static uint8_t *hw_in; static uint32_t hw_in_len, hw_in_seq; static int hw_in_ready;   /* keyframe for the worker */
+static uint8_t *hw_out; static uint32_t hw_out_len, hw_out_seq; static int hw_out_ready, hw_failed; /* JPEG from the worker */
+static uint64_t hw_jpegs;
+
+static void *hw_worker(void *arg) {
+  (void)arg;
+  for (;;) {
+    pthread_mutex_lock(&hw_mu);
+    while (!hw_in_ready) pthread_cond_wait(&hw_cv, &hw_mu);
+    uint8_t *in = hw_in; uint32_t len = hw_in_len, seq = hw_in_seq; hw_in = NULL; hw_in_ready = 0;
+    pthread_mutex_unlock(&hw_mu);
+    unsigned char *out = NULL; int olen = 0;
+    int r = hw_jpeg((const char *)in, len, &out, &olen);
+    free(in);
+    pthread_mutex_lock(&hw_mu);
+    if (r == 1) { free(hw_out); hw_out = out; hw_out_len = olen; hw_out_seq = seq; hw_out_ready = 1; }
+    else if (r < 0) { hw_failed = 1; free(out); }
+    pthread_mutex_unlock(&hw_mu);
+    if (r < 0) { fprintf(stderr, "k2cam: hardware pipeline failed (%d), using ffmpeg from now on\n", r); return NULL; }
+  }
+}
+
+/* Main loop: hand the newest keyframe to the worker (dropping one it hasn't started). */
+static void hw_feed(void) {
+  if (!hw_ok || now_ms() > hw_active_until) return;
+  uint8_t *c = malloc(kf_len); if (!c) return;
+  memcpy(c, kf, kf_len);
+  pthread_mutex_lock(&hw_mu);
+  free(hw_in); hw_in = c; hw_in_len = kf_len; hw_in_seq = kf_seq; hw_in_ready = 1;
+  pthread_cond_signal(&hw_cv);
+  pthread_mutex_unlock(&hw_mu);
+}
+
 
 static void snap_start(void) {
   int f = open(KF_FILE, O_WRONLY | O_CREAT | O_TRUNC, 0644);
@@ -166,7 +217,7 @@ static void c_send(struct client *c, int code, const char *ctype, const void *bo
 static int64_t kf_age(void) { return kf_len ? now_ms() - kf_at : -1; }
 
 static void c_snapshot_ready(struct client *c) {
-  char ex[96]; snprintf(ex, sizeof ex, "X-Seq: %u\r\nX-Age-Ms: %lld\r\n", jpg_seq, (long long)(now_ms() - jpg_at));
+  char ex[128]; snprintf(ex, sizeof ex, "X-Seq: %u\r\nX-Age-Ms: %lld\r\nX-Encoder: %s\r\n", jpg_seq, (long long)(now_ms() - jpg_at), hw_ok ? "hw" : "ffmpeg");
   c_send(c, 200, "image/jpeg", jpg, jpg_len, ex);
 }
 
@@ -176,8 +227,9 @@ static void c_handle(struct client *c) {
   int64_t age = kf_age();
   if (!strncmp(path, "/status", 7)) {
     char b[512];
-    int n = snprintf(b, sizeof b, "{\"subscribed\":%s,\"keyframe_seq\":%u,\"keyframe_bytes\":%u,\"keyframe_age_ms\":%lld,\"frames_total\":%llu,\"snapshots_made\":%llu,\"size\":\"%s\"}\n",
-                     dfd >= 0 ? "true" : "false", kf_seq, kf_len, (long long)age, (unsigned long long)frames_total, (unsigned long long)snaps_made, size);
+    int n = snprintf(b, sizeof b, "{\"subscribed\":%s,\"keyframe_seq\":%u,\"keyframe_bytes\":%u,\"keyframe_age_ms\":%lld,\"frames_total\":%llu,\"snapshots_made\":%llu,\"size\":\"%s\",\"hw\":%s,\"hw_active\":%s,\"hw_jpegs\":%llu}\n",
+                     dfd >= 0 ? "true" : "false", kf_seq, kf_len, (long long)age, (unsigned long long)frames_total, (unsigned long long)snaps_made, size,
+                     hw_ok ? "true" : "false", hw_ok && now_ms() <= hw_active_until ? "true" : "false", (unsigned long long)hw_jpegs);
     c_send(c, 200, "application/json", b, n, NULL);
   } else if (!strncmp(path, "/keyframe", 9)) {
     if (!kf_len || age > 5000) { c_send(c, 503, "text/plain", "no recent keyframe\n", 19, NULL); return; }
@@ -185,6 +237,13 @@ static void c_handle(struct client *c) {
     c_send(c, 200, "video/h264", kf, kf_len, ex);
   } else if (strstr(path, "action=snapshot") || !strncmp(path, "/snapshot", 9)) {
     if (!kf_len || age > 5000) { c_send(c, 503, "text/plain", "no recent keyframe\n", 19, NULL); return; }
+    if (hw_ok) {
+      int was_active = now_ms() <= hw_active_until;
+      hw_active_until = now_ms() + 60000;
+      if (!was_active) hw_feed();                 /* wake the pipeline with the current keyframe */
+      if (jpg_len && now_ms() - jpg_at < 2500) { c_snapshot_ready(c); return; }   /* fresh hardware JPEG */
+      c->state = C_WAIT_SNAP; c->since = now_ms(); return;                         /* the next one is ~1 s away */
+    }
     if (jpg_len && jpg_seq == kf_seq) { c_snapshot_ready(c); return; }   /* already decoded this keyframe */
     if (!snap_pid) snap_start();
     if (!snap_pid) { c_send(c, 503, "text/plain", "decode failed to start\n", 23, NULL); return; }
@@ -210,12 +269,25 @@ static void c_read(struct client *c) {
   if (strstr(c->req, "\r\n\r\n") || strstr(c->req, "\n\n") || c->len >= (int)sizeof c->req - 1) c_handle(c);
 }
 
+/* Main loop: take a finished JPEG from the worker. */
+static void hw_collect(void) {
+  if (!hw_ok) return;
+  pthread_mutex_lock(&hw_mu);
+  if (hw_out_ready) { free(jpg); jpg = hw_out; jpg_len = hw_out_len; jpg_seq = hw_out_seq; jpg_at = now_ms(); hw_out = NULL; hw_out_ready = 0; hw_jpegs++; snaps_made++; }
+  int failed_now = hw_failed && hw_ok;
+  if (hw_failed) hw_ok = 0;
+  pthread_mutex_unlock(&hw_mu);
+  if (failed_now && kf_len && !snap_pid) { snap_start(); for (int i = 0; i < MAX_CLIENTS; i++) if (cl[i].state == C_WAIT_SNAP) cl[i].since = now_ms(); }
+}
+
 int main(int argc, char **argv) {
   int o;
-  while ((o = getopt(argc, argv, "p:s:i:")) != -1) {
+  while ((o = getopt(argc, argv, "p:s:i:q:n")) != -1) {
     if (o == 'p') port = atoi(optarg);
     else if (o == 's') snprintf(size, sizeof size, "%s", optarg);
     else if (o == 'i') station = atoi(optarg);
+    else if (o == 'q') jpeg_quality = atoi(optarg);
+    else if (o == 'n') use_hw = 0;
   }
   signal(SIGPIPE, SIG_IGN);
   msg = malloc(MAX_MSG);
@@ -225,7 +297,13 @@ int main(int argc, char **argv) {
   struct sockaddr_in a; memset(&a, 0, sizeof a); a.sin_family = AF_INET; a.sin_port = htons(port); a.sin_addr.s_addr = htonl(INADDR_ANY);
   if (bind(lfd, (struct sockaddr *)&a, sizeof a) || listen(lfd, 16)) { perror("k2cam: listen"); return 1; }
   fcntl(lfd, F_SETFL, O_NONBLOCK);
-  fprintf(stderr, "k2cam: listening on :%d, snapshot size %s\n", port, size);
+  if (use_hw) {
+    int w = 1280, h = 720; sscanf(size, "%dx%d", &w, &h);
+    pthread_t th;
+    if (hw_open(w, h, jpeg_quality) == 0 && pthread_create(&th, NULL, hw_worker, NULL) == 0) { hw_ok = 1; pthread_detach(th); }
+    else fprintf(stderr, "k2cam: hardware video engine unavailable, using ffmpeg for snapshots\n");
+  }
+  fprintf(stderr, "k2cam: listening on :%d, snapshot size %s, encoder %s\n", port, size, hw_ok ? "hardware" : "ffmpeg");
 
   for (;;) {
     if (dfd < 0 && now_ms() >= d_retry_at) d_connect();
@@ -238,10 +316,18 @@ int main(int argc, char **argv) {
     if (dpi >= 0 && p[dpi].revents) d_read();
     for (int i = 0; i < n; i++) if (pc[i] && p[i].revents) c_read(pc[i]);
     snap_reap();
+    hw_collect();
     int64_t t = now_ms();
     for (int i = 0; i < MAX_CLIENTS; i++) {
       struct client *c = &cl[i];
       if (c->state == C_READING && t - c->since > 5000) c_close(c);
+      else if (c->state == C_WAIT_SNAP && hw_ok) {
+        if (jpg_len && jpg_at > c->since) c_snapshot_ready(c);
+        else if (t - c->since > 4000) {
+          if (jpg_len && t - jpg_at < 10000) c_snapshot_ready(c);
+          else c_send(c, 503, "text/plain", "decode timeout\n", 15, NULL);
+        }
+      }
       else if (c->state == C_WAIT_SNAP) {
         if (jpg_len && jpg_seq == snap_seq && !snap_pid) c_snapshot_ready(c);
         else if (!snap_pid && t - c->since > 200) {
