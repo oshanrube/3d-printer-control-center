@@ -5,7 +5,7 @@ export interface Printer {
   name: string;
   ip: string;            // host or host:port; Moonraker assumed on :7125
   moonrakerPort: number; // default 7125
-  cameraType: 'auto' | 'mjpeg' | 'webrtc' | 'none';
+  cameraType: 'auto' | 'mjpeg' | 'webrtc' | 'k2' | 'none';
   webrtcPort?: number;   // libpeer signaling port, default 8000
   disabled: boolean;
   createdAt: number;

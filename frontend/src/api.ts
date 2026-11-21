@@ -16,7 +16,7 @@ export interface LiveState {
 }
 export interface Printer {
   id: number; name: string; ip: string; moonrakerPort: number;
-  cameraType: 'auto' | 'mjpeg' | 'webrtc' | 'none'; disabled: boolean; createdAt: number;
+  cameraType: 'auto' | 'mjpeg' | 'webrtc' | 'k2' | 'none'; disabled: boolean; createdAt: number;
   live?: LiveState | null;
 }
 export interface PrinterEvent {

@@ -5,6 +5,7 @@ import { Fleet } from './fleet.js';
 import { Engine } from './engine.js';
 import { buildServer } from './server.js';
 import { relay } from './webrtc-relay.js';
+import { stopK2Decoders } from './k2cam.js';
 import { AiAnalyzer } from './ai-analyzer.js';
 import { JamDetector } from './jam-detector.js';
 import { RefComparer } from './ref-compare.js';
@@ -57,6 +58,7 @@ async function main() {
     jam.stop();
     refRef.current?.stop();
     try { await relay.stop(); } catch { /* ignore */ }
+    stopK2Decoders();
     try { await app.close(); } catch { /* ignore */ }
     process.exit(0);
   };

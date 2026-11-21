@@ -1,5 +1,6 @@
 import type { Printer } from './types.js';
 import { relay } from './webrtc-relay.js';
+import { k2Capture, k2LiveFrame } from './k2cam.js';
 
 /**
  * Camera access from the backend. The Pi (backend) can reach every printer —
@@ -32,6 +33,11 @@ export function snapshotCandidates(printer: Printer): string[] {
 const workingUrl = new Map<number, string>();
 
 export async function fetchSnapshot(printer: Printer): Promise<{ body: Buffer; contentType: string } | null> {
+  // K2 with the k2cam service: keyframes decoded here while someone watches (k2cam.ts).
+  if (printer.cameraType === 'k2') {
+    const f = await k2LiveFrame(printer);
+    return f ? { body: f, contentType: 'image/jpeg' } : null;
+  }
   // WebRTC-capable cameras: keep the relay warm and serve its latest frame.
   if (wantsWebrtc(printer)) {
     relay.ensure(printer);   // idempotent; starts Chromium page if needed
@@ -79,6 +85,10 @@ export function hasMjpegCamera(printer: Printer): boolean {
  * bursts instead of pinning a CPU core for the whole print.
  */
 export async function captureForDataset(printer: Printer): Promise<{ body: Buffer; contentType: string } | null> {
+  if (printer.cameraType === 'k2') {
+    const f = await k2Capture(printer);
+    return f ? { body: f, contentType: 'image/jpeg' } : null;
+  }
   if (wantsWebrtc(printer)) {
     const frame = await relay.grab(printer);
     if (frame) return { body: frame, contentType: 'image/jpeg' };

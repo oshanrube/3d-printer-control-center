@@ -17,9 +17,10 @@ RUN npm run build
 # ---------- Runtime ----------
 FROM node:20-bookworm-slim
 WORKDIR /app
-# Chromium is the WebRTC decode engine for K2/newer-K1C cameras (libpeer H264/DTLS).
+# Chromium is the WebRTC decode engine for WebRTC cameras (libpeer H264/DTLS);
+# ffmpeg decodes K2 keyframes from the printers' k2cam service (k2cam.ts).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      chromium fonts-liberation libnss3 libatk-bridge2.0-0 libgtk-3-0 libasound2 \
+      chromium fonts-liberation libnss3 libatk-bridge2.0-0 libgtk-3-0 libasound2 ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 ENV NODE_ENV=production \
     PORT=8082 \

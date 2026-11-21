@@ -106,7 +106,7 @@ function Camera({ printer }: { printer: Printer }) {
           onLoad={() => { setFailed(false); next(CAMERA_REFRESH_MS); }}
           onError={() => { setFailed(true); window.clearTimeout(timer.current); timer.current = window.setTimeout(() => { if (alive.current) { setFailed(false); next(0); } }, 4000); }} />
       )}
-      {failed && <div class="noimg">{printer.cameraType === 'webrtc' ? 'Connecting camera…' : 'Camera unavailable'}</div>}
+      {failed && <div class="noimg">{printer.cameraType === 'webrtc' || printer.cameraType === 'k2' ? 'Connecting camera…' : 'Camera unavailable'}</div>}
     </div>
   );
 }
@@ -279,7 +279,7 @@ function PrinterModal({ printer, onClose }: { printer: Printer | 'new'; onClose:
         <div class="field"><label>Camera</label>
           <select value={cameraType} onChange={(e: any) => setCameraType(e.target.value)}>
             <option value="auto">Auto</option><option value="mjpeg">MJPEG (K1/K1C)</option>
-            <option value="webrtc">WebRTC (K2)</option><option value="none">None</option>
+            <option value="webrtc">WebRTC (relay)</option><option value="k2">K2 (k2cam service)</option><option value="none">None</option>
           </select>
         </div>
         <div class="row"><button class="btn btn-primary" style="flex:1" onClick={save}>{editing ? 'Save' : 'Add'}</button>
