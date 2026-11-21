@@ -121,3 +121,16 @@ Test build: `-DCEDAR_HW_TEST -o hwjpegtest cedar_hw.c -ldl`.
 - The Pi (`backend/src/k2cam.ts`) takes the printer's JPEGs for live view when it reports
   `X-Encoder: hw` (dashboard median ~30 ms, no ffmpeg on the Pi), else decodes keyframes itself.
 - Previous ffmpeg-only binary kept on Chopper as `/mnt/UDISK/k2cam.ffmpeg-only.bak`.
+
+## Zero-copy decode -> encode (since 2026-11-21)
+The encoder takes the decoder's picture by physical address instead of a CPU copy into its own
+input buffer (and the two 2-3 MB cache flushes go away): `VencInputBuffer` gets
+`pAddrPhyY/C` = the picture's `phyYBufAddr/phyCBufAddr` (VideoPicture offsets 116/120 in the
+2021 layout) and `pAddrVirY/C` = `pData0/1`; no `AllocInputBuffer` buffer is used.
+Safety: the addresses must match `memops->ve_get_phyaddr(pData0/1)` (an independent source);
+otherwise, or if the encode fails, `cedar_hw.c` switches to the copy path for good.
+Result on idle Chopper: byte-identical JPEGs (same MD5) to the copy path; CPU per JPEG incl.
+start-up 15.5 -> 7.2 ms; the running k2cam at 1 JPEG/s: 2.7% -> 2.1% of one core (the rest is
+receiving the 13 fps stream, the 2 ms polls and HTTP). `hwjpegtest ... <WxH> <q> <zerocopy 0|1>`.
+Scaling 1080p -> 720p in the encoder costs nothing measurable (same time and CPU as 1080p
+output) and halves the JPEG size (~112 vs ~197 KB), so output stays 720p.

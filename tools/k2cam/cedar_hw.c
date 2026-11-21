@@ -34,9 +34,11 @@ typedef struct { int bScaleDownEn, bRotationEn, bSecOutputEn, nHorizonScaleDownR
   unsigned nVeFreq; int bCalledByOmxFlag, bSetProcInfoEnable, nSetProcInfoFreq, nChannelNum, nSupportMaxWidth, nSupportMaxHeight, commonConfigFlag, bATMFlag; } VConfig;
 typedef struct { char *pData; int nLength; int64_t nPts, nPcr; int bIsFirstPart, bIsLastPart, nID, nStreamIndex, bValid; unsigned bVideoInfoFlag; void *pVideoInfo; } VideoStreamDataInfo;
 typedef struct { int nID, nStreamIndex, ePixelFormat, nWidth, nHeight, nLineStride, nTopOffset, nLeftOffset, nBottomOffset, nRightOffset,
-  nFrameRate, nAspectRatio, bIsProgressive, bTopFieldFirst, bRepeatTopField; int64_t nPts, nPcr; char *pData0, *pData1, *pData2, *pData3; } VideoPicture;
+  nFrameRate, nAspectRatio, bIsProgressive, bTopFieldFirst, bRepeatTopField; int64_t nPts, nPcr; char *pData0, *pData1, *pData2, *pData3;
+  int bMafValid; char *pMafData; int nMafFlagStride, bPreFrmValid, nBufId; unsigned long phyYBufAddr, phyCBufAddr; } VideoPicture;
 struct ScMemOpsS { int (*open)(void); int (*open2)(void *, void *); void (*close)(void); int (*total_size)(void); void *(*palloc)(int, void *, void *);
-  void *(*palloc_no_cache)(int, void *, void *); void (*pfree)(void *, void *, void *); void (*flush_cache)(void *, int); };
+  void *(*palloc_no_cache)(int, void *, void *); void (*pfree)(void *, void *, void *); void (*flush_cache)(void *, int);
+  void *(*ve_get_phyaddr)(void *); void *(*ve_get_viraddr)(void *); void *(*cpu_get_phyaddr)(void *); void *(*cpu_get_viraddr)(void *); };
 
 /* ---- encoder structs (vencoder.h) ---- */
 enum { VENC_CODEC_JPEG = 1, VENC_PIXEL_YVU420SP = 1, VENC_IndexParamJpegQuality = 0x200, VENC_IndexParamJpegEncMode = 0x202 };
@@ -52,6 +54,8 @@ typedef struct { unsigned nBufferNum, nSizeY, nSizeC; } VencAllocateBufferParam;
 static struct ScMemOpsS *memops;
 static void *dec, *enc;
 static int dstW, dstH, quality, encW, encH, encReady;
+int hw_zero_copy = 1;      /* hand the decoder's frame to the encoder by physical address (no CPU copy) */
+static int zc_checked;
 static void *(*fCreateVideoDecoder)(void); static int (*fInitializeVideoDecoder)(void *, VideoStreamInfo *, VConfig *);
 static int (*fRequestVideoStreamBuffer)(void *, int, char **, int *, char **, int *, int);
 static int (*fSubmitVideoStreamData)(void *, VideoStreamDataInfo *, int);
@@ -106,7 +110,7 @@ static int enc_setup(int w, int h, int stride) {
   int r = fVideoEncInit(enc, bc); free(bc);
   if (r) { fprintf(stderr, "cedar_hw: VideoEncInit %d\n", r); return -1; }
   VencAllocateBufferParam bp = { 1, (unsigned)(stride * ((h + 15) & ~15)), (unsigned)(stride * ((h + 15) & ~15) / 2) };
-  r = fAllocInputBuffer(enc, &bp);
+  r = fAllocInputBuffer(enc, &bp);   /* kept for the copy path (fallback) */
   if (r) { fprintf(stderr, "cedar_hw: AllocInputBuffer %d\n", r); return -1; }
   encW = w; encH = h; encReady = 1;
   return 0;
@@ -115,6 +119,27 @@ static int enc_setup(int w, int h, int stride) {
 static int encode(VideoPicture *pic, unsigned char **jpg, int *jlen) {
   int w = pic->nWidth, h = pic->nHeight > 1080 && pic->nHeight <= 1088 ? 1080 : pic->nHeight, stride = pic->nLineStride;
   if (!encReady && enc_setup(w, h, stride)) return -1;
+  if (hw_zero_copy) {
+    /* Physical addresses from two independent sources must agree, or we don't trust them. */
+    unsigned long py = (unsigned long)memops->ve_get_phyaddr(pic->pData0), pc = (unsigned long)memops->ve_get_phyaddr(pic->pData1);
+    if (!zc_checked) {
+      zc_checked = 1;
+      fprintf(stderr, "cedar_hw: zero-copy check: ve_get_phyaddr Y=%#lx C=%#lx, picture phyY=%#lx phyC=%#lx\n", py, pc, pic->phyYBufAddr, pic->phyCBufAddr);
+      if (!py || !pc || py != pic->phyYBufAddr || pc != pic->phyCBufAddr) { fprintf(stderr, "cedar_hw: addresses disagree, using the copy path\n"); hw_zero_copy = 0; }
+    } else if (!py || py != pic->phyYBufAddr || pc != pic->phyCBufAddr) { hw_zero_copy = 0; fprintf(stderr, "cedar_hw: address mismatch, using the copy path\n"); }
+  }
+  if (hw_zero_copy) {
+    char *zm = calloc(1, sizeof(VencInputBuffer) + PAD); VencInputBuffer *zin = (VencInputBuffer *)zm;
+    zin->pAddrVirY = (unsigned char *)pic->pData0; zin->pAddrVirC = (unsigned char *)pic->pData1;
+    zin->pAddrPhyY = (unsigned char *)pic->phyYBufAddr; zin->pAddrPhyC = (unsigned char *)pic->phyCBufAddr;
+    zin->nWidth = w; zin->nHeight = h; zin->bEnableCorp = 0;
+    int zr = fAddOneInputBuffer(enc, zin);
+    if (!zr) zr = fVideoEncodeOneFrame(enc);
+    fAlreadyUsedInputBuffer(enc, zin);
+    free(zm);
+    if (zr) { fprintf(stderr, "cedar_hw: zero-copy encode %d, using the copy path\n", zr); hw_zero_copy = 0; }
+    else goto bitstream;
+  }
   char *inbuf_mem = calloc(1, sizeof(VencInputBuffer) + PAD); VencInputBuffer *in = (VencInputBuffer *)inbuf_mem;
   if (fGetOneAllocInputBuffer(enc, in) || !in->pAddrVirY || !in->pAddrVirC) { fprintf(stderr, "cedar_hw: no input buffer (%p %p)\n", in->pAddrVirY, in->pAddrVirC); free(inbuf_mem); return -1; }
   int ysz = stride * pic->nHeight;
@@ -129,6 +154,7 @@ static int encode(VideoPicture *pic, unsigned char **jpg, int *jlen) {
   fReturnOneAllocInputBuffer(enc, in);
   free(inbuf_mem);
   if (r) { fprintf(stderr, "cedar_hw: encode %d\n", r); return -1; }
+bitstream:;
   char *ob_mem = calloc(1, sizeof(VencOutputBuffer) + PAD); VencOutputBuffer *ob = (VencOutputBuffer *)ob_mem;
   if (fGetOneBitstreamFrame(enc, ob) || !ob->pData0 || !ob->nSize0) { fprintf(stderr, "cedar_hw: no bitstream\n"); free(ob_mem); return -1; }
   *jlen = ob->nSize0 + ob->nSize1; *jpg = malloc(*jlen);
@@ -172,6 +198,7 @@ int main(int argc, char **argv) {
   if (argc < 3) { puts("usage: hwjpegtest kf0.h264,kf1.h264,... runs [out.jpg] [WxH=1280x720] [quality=80]"); return 1; }
   int runs = atoi(argv[2]); const char *out = argc > 3 && argv[3][0] ? argv[3] : NULL;
   int w = 1280, h = 720, q = argc > 5 ? atoi(argv[5]) : 80; if (argc > 4) sscanf(argv[4], "%dx%d", &w, &h);
+  if (argc > 6) hw_zero_copy = atoi(argv[6]);
   static char kfs[8][1 << 19]; int lens[8], n = 0;
   for (char *t = strtok(argv[1], ","); t && n < 8; t = strtok(NULL, ",")) { FILE *f = fopen(t, "rb"); if (!f) { perror(t); return 1; } lens[n] = fread(kfs[n], 1, sizeof kfs[0], f); fclose(f); n++; }
   if (hw_open(w, h, q)) { puts("hw_open failed"); return 1; }
@@ -189,8 +216,8 @@ int main(int argc, char **argv) {
   }
   struct rusage ru; getrusage(RUSAGE_SELF, &ru);
   double cpu = ru.ru_utime.tv_sec * 1e3 + ru.ru_utime.tv_usec / 1e3 + ru.ru_stime.tv_sec * 1e3 + ru.ru_stime.tv_usec / 1e3;
-  printf("JPEGs %d of %d, average after the first %.1f ms; process CPU %.0f ms total (%.1f ms per JPEG incl. start-up)\n",
-         got, runs, got > 1 ? total / (got - 1) : 0, cpu, got ? cpu / got : 0);
+  printf("[zero-copy %s] JPEGs %d of %d, average after the first %.1f ms; process CPU %.0f ms total (%.1f ms per JPEG incl. start-up)\n",
+         hw_zero_copy ? "on" : "off", got, runs, got > 1 ? total / (got - 1) : 0, cpu, got ? cpu / got : 0);
   hw_close();
   return 0;
 }
