@@ -71,3 +71,30 @@ overlay, so a firmware update removes them.
 - Dataset/AI frames: a live frame under 5 s old, else the printer's `/?action=snapshot`, so
   an unwatched K2 costs the Pi nothing.
 - Without the relay's WebRTC session, the printer's `webrtc_local` went from 28% to 0% CPU.
+
+## Hardware H.264 decode on the K2 (verified 2026-11-21, Chopper idle)
+The T113-i (sun8iw20p1) has Allwinner's video engine (`/dev/cedar_dev`, unused by the
+firmware: the camera already delivers H.264). Its CedarC **v1.3.0** libraries are on the
+printer (`/usr/lib`, base image `/rom/usr/lib`). `cedartest.c` drives them via `dlopen`:
+- Headers: libcedarc from the Lindenis V853 Tina SDK (2021), `lindenis-org/lindenis-v853-external`
+  `libcedarc/include` (the 2018 v1.1.9 copy, aodzip/libcedarc, is older). VConfig layout checked
+  against the printer's `InitializeVideoDecoder` (reads offsets 80/148/156/160 =
+  bSecureosEn/nVeFreq/bSetProcInfoEnable/nSetProcInfoFreq); structs passed in are zero-padded.
+- Sequence: `MemAdapterGetOpsS()->open()`, `CreateVideoDecoder`, **register the codec plugin
+  by calling `CedarPluginVDInit()` from `libawh264.so`** (otherwise "unsupported format
+  H264"; the player normally does this via `AddVDPlugin`), `InitializeVideoDecoder`
+  (eCodecFormat 0x115, 1920x1080, bIsFramePackage 1, NV21 = 5, nVbvBufferSize 2 MB, memops),
+  then per frame `RequestVideoStreamBuffer` (ring: copy into buf0/buf1) ->
+  `SubmitVideoStreamData` (first+last part, valid) -> poll `DecodeVideoStream` +
+  `RequestPicture` with 2 ms sleeps (the engine finishes asynchronously; a tight loop
+  gave flaky results) -> `flush_cache` the planes -> read -> `ReturnPicture`.
+- Do **not** append an AUD (NAL 9): with it nothing decodes. Feeding the same keyframe
+  repeatedly also stalls (same frame_num/idr_pic_id looks like one picture); a real stream
+  is fine. A picture comes out one submission later (needs the next start code).
+- Result: 1920x1088 NV21 (crop to 1080), correct image; **~10 ms wall, 2.3 ms CPU per
+  picture** vs ~430 ms CPU for ffmpeg's software decode on the same chip.
+- Build: Debian buster `gcc-arm-linux-gnueabihf` (glibc 2.28; the K2 has 2.29),
+  `arm-linux-gnueabihf-gcc -O2 -o cedartest cedartest.c -ldl`.
+  Run: `cedartest kf0.h264,kf1.h264,kf2.h264 <runs> [out.nv21|""] [framePkg=1] [aud=0] [noB=0]`.
+Next: hardware JPEG encode (`libvencoder`, `VideoEncCreate` with the JPEG codec) so k2cam
+can serve JPEGs with almost no CPU.
