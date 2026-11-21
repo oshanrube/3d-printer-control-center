@@ -57,12 +57,13 @@ static int64_t now_ms(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, 
 
 /* ---- delivery subscription ---- */
 static int dfd = -1;
-static int64_t d_retry_at = 0;
+static int d_connecting;             /* connect() in progress (waiting for POLLOUT) */
+static int64_t d_retry_at, d_deadline;
 static uint8_t *msg; static uint32_t msg_have, msg_need; static uint32_t hdr[2]; static int hdr_have;
 static uint8_t *kf; static uint32_t kf_len; static uint32_t kf_seq; static int64_t kf_at;
 static uint64_t frames_total;
 
-static void d_close(void) { if (dfd >= 0) close(dfd); dfd = -1; hdr_have = 0; msg_have = msg_need = 0; d_retry_at = now_ms() + 2000; }
+static void d_close(void) { if (dfd >= 0) close(dfd); dfd = -1; d_connecting = 0; hdr_have = 0; msg_have = msg_need = 0; d_retry_at = now_ms() + 2000; }
 
 static int write_all(int fd, const void *b, size_t n) {
   const char *p = b;
@@ -70,15 +71,28 @@ static int write_all(int fd, const void *b, size_t n) {
   return 0;
 }
 
+/* Start a non-blocking connect to cam_app. The main loop must never block here: on this K2
+ * cam_app's accept backlog can be full (a storm of stale delivery clients), and a blocking
+ * connect would freeze the whole HTTP server. */
 static void d_connect(void) {
   int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+  if (fd < 0) { d_retry_at = now_ms() + 2000; return; }
+  fcntl(fd, F_SETFL, O_NONBLOCK);
   struct sockaddr_un a; memset(&a, 0, sizeof a); a.sun_family = AF_UNIX; strcpy(a.sun_path, DELIVERY_PATH);
-  if (fd < 0 || connect(fd, (struct sockaddr *)&a, sizeof a)) { if (fd >= 0) close(fd); d_retry_at = now_ms() + 2000; return; }
+  int r = connect(fd, (struct sockaddr *)&a, sizeof a);
+  if (r == 0) { dfd = fd; d_connecting = 1; d_deadline = now_ms(); return; }   /* finish in d_finish_connect */
+  if (errno == EINPROGRESS || errno == EAGAIN) { dfd = fd; d_connecting = 1; d_deadline = now_ms() + 5000; return; }
+  close(fd); d_retry_at = now_ms() + 2000;
+}
+
+/* POLLOUT (or immediate success): check the connect, then send the subscribe. */
+static void d_finish_connect(void) {
+  int err = 0; socklen_t el = sizeof err;
+  if (getsockopt(dfd, SOL_SOCKET, SO_ERROR, &err, &el) || err) { d_close(); return; }
   uint32_t hello[3] = { 4, 0x10000, (uint32_t)station };
   uint32_t sub[4] = { 8, 0x10001, (uint32_t)station, TOPIC_H264 };
-  if (write_all(fd, hello, sizeof hello) || write_all(fd, sub, sizeof sub)) { close(fd); d_retry_at = now_ms() + 2000; return; }
-  fcntl(fd, F_SETFL, O_NONBLOCK);
-  dfd = fd; hdr_have = 0; msg_have = msg_need = 0;
+  if (write_all(dfd, hello, sizeof hello) || write_all(dfd, sub, sizeof sub)) { d_close(); return; }
+  d_connecting = 0; hdr_have = 0; msg_have = msg_need = 0;
   fprintf(stderr, "k2cam: subscribed to station 100 topic %d as station %d\n", TOPIC_H264, station);
 }
 
@@ -307,13 +321,14 @@ int main(int argc, char **argv) {
 
   for (;;) {
     if (dfd < 0 && now_ms() >= d_retry_at) d_connect();
+    if (d_connecting && now_ms() > d_deadline) d_close();   /* cam_app never accepted; retry later */
     struct pollfd p[2 + MAX_CLIENTS]; struct client *pc[2 + MAX_CLIENTS]; int n = 0;
     p[n].fd = lfd; p[n].events = POLLIN; pc[n++] = NULL;
-    int dpi = -1; if (dfd >= 0) { dpi = n; p[n].fd = dfd; p[n].events = POLLIN; pc[n++] = NULL; }
+    int dpi = -1; if (dfd >= 0) { dpi = n; p[n].fd = dfd; p[n].events = d_connecting ? POLLOUT : POLLIN; pc[n++] = NULL; }
     for (int i = 0; i < MAX_CLIENTS; i++) if (cl[i].state == C_READING) { p[n].fd = cl[i].fd; p[n].events = POLLIN; pc[n++] = &cl[i]; }
     poll(p, n, 100);
     if (p[0].revents & POLLIN) c_accept();
-    if (dpi >= 0 && p[dpi].revents) d_read();
+    if (dpi >= 0 && p[dpi].revents) { if (d_connecting) d_finish_connect(); else d_read(); }
     for (int i = 0; i < n; i++) if (pc[i] && p[i].revents) c_read(pc[i]);
     snap_reap();
     hw_collect();

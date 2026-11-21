@@ -148,13 +148,10 @@ export class WebrtcRelay {
   available = true;
 
   async init() {
-    try {
-      await this.ensureBrowser();
-      setInterval(() => this.sweep(), 5000);
-    } catch (e) {
-      this.available = false;
-      console.warn('[webrtc-relay] Chromium unavailable, WebRTC cameras disabled:', (e as any)?.message || e);
-    }
+    // Chromium is launched lazily, only when a 'webrtc'/'auto' camera is actually viewed
+    // (ensureBrowser in start()). With every printer on mjpeg or the K2 k2cam service, no
+    // Chromium runs at all. The sweep is cheap and harmless when there are no pages.
+    setInterval(() => this.sweep(), 5000);
   }
 
   private async ensureBrowser(): Promise<Browser | undefined> {

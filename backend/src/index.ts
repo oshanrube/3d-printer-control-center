@@ -30,7 +30,7 @@ function seedIfEmpty() {
 async function main() {
   initPush();
   seedIfEmpty();
-  await relay.init();  // launches headless Chromium for WebRTC cameras (no-op if unavailable)
+  await relay.init();  // Chromium launches lazily, only if a webrtc/auto camera is viewed
 
   const fleet = new Fleet();
   const aiRef: { current?: AiAnalyzer } = {};
