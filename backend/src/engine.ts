@@ -32,6 +32,8 @@ interface Track {
   powerLoss?: { since: number; bed: number; file: string | null; lastRemind: number };   // rebooted mid-print, waiting for resume
   lastKlipperError?: string;    // last Klipper error already alerted
   faultAlerted?: boolean;       // current Creality fault was alerted (not a mirror of a Klipper error)
+  pausedSince?: number;         // when the current pause began (persisted; auto-cancel after pauseCancelMin)
+  autoCancelPaused?: boolean;   // we cancelled this print for being paused too long
 }
 
 const FAULT_SETTLE_MS = 5000;
@@ -71,7 +73,7 @@ export class Engine {
   start() {
     this.fleet.on('state', (s: LiveState) => this.onState(s));
     // Heater watchdog also runs on a timer, in case a printer goes quiet.
-    setInterval(() => { for (const s of this.fleet.getStates()) { this.checkHeaters(s); this.checkIdlePeripherals(s); this.checkPauseWatch(s); this.remindPowerLoss(s); } }, 30_000);
+    setInterval(() => { for (const s of this.fleet.getStates()) { this.checkHeaters(s); this.checkIdlePeripherals(s); this.checkPauseWatch(s); this.remindPowerLoss(s); this.checkPausedTooLong(s); } }, 30_000);
     // Auto-pauses survive a restart, so the reminders keep coming.
     for (const p of this.fleet.getStates()) {
       try { const w = JSON.parse(kv.get(`autopause:${p.printerId}`) || 'null'); if (w?.kind) this.pauseWatch.set(p.printerId, w); } catch { /* none */ }
@@ -162,6 +164,31 @@ export class Engine {
     if (w) this.pauseWatch.set(id, w); else this.pauseWatch.delete(id);
     this.fleet.setFlags(id, { autoPaused: w && w.kind !== 'runout' ? w.reason : null });
     try { kv.set(`autopause:${id}`, w ? JSON.stringify(w) : ''); } catch { /* best effort */ }
+  }
+
+  /**
+   * A print left paused for pauseCancelMin (default 2 h) is cancelled and marked failed.
+   * Cancelling flows through the normal 'cancelled' path (endPrint + the store job is set
+   * failed and requeued); the 'cancelled' event then says it was paused too long.
+   */
+  private checkPausedTooLong(s: LiveState) {
+    const t = this.track(s.printerId);
+    if (config.pauseCancelMin > 0 && s.online && s.state === 'paused') {
+      if (!t.pausedSince) {
+        // Survive a backend restart mid-pause so the clock isn't reset.
+        t.pausedSince = Number(kv.get(`pausedsince:${s.printerId}`)) || Date.now();
+        kv.set(`pausedsince:${s.printerId}`, String(t.pausedSince));
+      }
+      if (!t.autoCancelPaused && Date.now() - t.pausedSince >= config.pauseCancelMin * 60_000) {
+        t.autoCancelPaused = true;   // the 'cancelled' transition explains why and ends the print
+        console.warn(`[engine] ${this.printerName(s.printerId)} paused ${Math.round((Date.now() - t.pausedSince) / 60_000)} min (> ${config.pauseCancelMin}); cancelling`);
+        this.fleet.client(s.printerId)?.cancel().catch(e => console.warn(`[engine] auto-cancel failed: ${e?.message || e}`));
+      }
+    } else if (s.state !== 'paused' && (t.pausedSince || t.autoCancelPaused)) {
+      t.pausedSince = undefined;
+      t.autoCancelPaused = false;
+      kv.set(`pausedsince:${s.printerId}`, '');
+    }
   }
 
   private checkPauseWatch(s: LiveState) {
@@ -268,7 +295,8 @@ export class Engine {
           mk('print_finished', 'info', `✅ ${name} finished`, `${s.filename || 'Print'} completed.`);
           this.endPrint(s.printerId, 'completed');
         } else if (s.state === 'cancelled') {
-          mk('print_cancelled', 'warning', `${name} print cancelled`, `${s.filename || 'Print'} was cancelled.`);
+          const why = t.autoCancelPaused ? ` (paused over ${config.pauseCancelMin} min, so it was cancelled and marked failed)` : '';
+          mk('print_cancelled', 'warning', `${name} print cancelled`, `${s.filename || 'Print'} was cancelled${why}.`);
           this.endPrint(s.printerId, 'cancelled');
         } else if (s.state === 'error') {
           this.endPrint(s.printerId, 'error');      // alert raised below

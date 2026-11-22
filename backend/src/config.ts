@@ -26,6 +26,8 @@ export const config = {
   autoPauseJam: (process.env.AUTO_PAUSE_JAM ?? '1') === '1',
   // After an auto-pause, push a reminder this often while the print stays paused.
   pauseRemindMin: parseInt(process.env.PAUSE_REMIND_MIN || '5', 10),
+  // A print left paused this long is cancelled and marked failed (0 = never).
+  pauseCancelMin: parseInt(process.env.PAUSE_CANCEL_MIN || '120', 10),
   // Idle-heater watchdog: heaters on while nothing is printing.
   idleHeaterAlertMin: parseInt(process.env.IDLE_HEATER_ALERT_MIN || '15', 10),
   // Turn heaters off after this long (0 = alert only). Never applied to a paused print.
