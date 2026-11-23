@@ -161,9 +161,11 @@ function PrinterCard({ printer, onEdit, toLabel, onLabelled, onLater, job, store
   const concern = !!s && active && !s.markedOk
     && (!!s.autoPaused || (!!s.reference && !s.reference.ok) || (!!s.ai && s.ai.assessment !== 'success'));
   const looksFine = async () => {
-    if (busy.current) return; busy.current = true;
+    if (busy.current || pending) return; busy.current = true; setActErr('');
+    const willResume = st === 'paused';
+    if (willResume) setPending({ a: 'resume', until: Date.now() + ACTION_TIMEOUT_MS });
     try { await api.looksFine(printer.id); }
-    catch (e: any) { alert(`Couldn't update ${printer.name}: ${e?.message || e}`); }
+    catch (e: any) { if (willResume) setPending(null); setActErr(`Couldn't update ${printer.name}: ${e?.message || e}`); }
     finally { busy.current = false; }
   };
   return (
@@ -222,10 +224,11 @@ function PrinterCard({ printer, onEdit, toLabel, onLabelled, onLater, job, store
       )}
       {concern && (
         <div class="fine-line">
-          <button class="btn btn-sm" onClick={looksFine}>
-            👍 {s!.autoPaused && st === 'paused' ? 'Printing fine, resume' : 'Printing fine'}
+          <button class="btn btn-sm btn-primary" disabled={!!pending} onClick={looksFine}>
+            👍 {st === 'paused' ? 'Print is fine, resume' : 'Print is fine'}
           </button>
-          <span class="muted">Stops the checks flagging this print{s!.autoPaused && st === 'paused' ? ' and resumes it' : ''}.</span>
+          <button class="btn btn-sm btn-danger" disabled={!!pending} onClick={() => setAsking('cancel')}>🛑 Failed, cancel</button>
+          <span class="muted">{st === 'paused' ? 'Resume the print, or cancel it and mark it failed.' : 'Keep printing (stops the checks flagging it), or cancel and mark it failed.'}</span>
         </div>
       )}
       {s?.markedOk && active && <div class="muted fine-line">👍 You marked this print as fine: reference and jam checks are off, and the AI won't pause it.</div>}

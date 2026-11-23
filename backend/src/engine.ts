@@ -146,10 +146,11 @@ export class Engine {
     markPrintOk(printerId, s.filename);
     this.fleet.setFlags(printerId, { markedOk: true });
     this.fleet.setReference(printerId, null);
-    const watched = this.pauseWatch.has(printerId) && this.pauseWatch.get(printerId)!.kind !== 'runout';   // never resume a runout
-    if (watched) this.savePauseWatch(printerId, null);
+    const isRunout = this.pauseWatch.get(printerId)?.kind === 'runout';   // never resume a runout (no filament)
+    if (this.pauseWatch.has(printerId) && !isRunout) this.savePauseWatch(printerId, null);
+    // "It's fine" means carry on: resume whenever it's paused (a detector pause, or a hand pause), just not a runout.
     // Creality's resume macro can take minutes to answer: don't wait; the live state shows the outcome.
-    const resumed = watched && s.state === 'paused';
+    const resumed = s.state === 'paused' && !isRunout;
     if (resumed) this.fleet.client(printerId)?.resume().catch(e => console.warn(`[engine] resume of ${name} failed: ${e?.message || e}`));
     this.emit({
       printerId, printerName: name, type: 'info', severity: 'info',
