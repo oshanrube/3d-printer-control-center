@@ -7,6 +7,8 @@ import type { Fleet } from './fleet.js';
 import type { Spool } from './creality.js';
 import type { LiveState } from './types.js';
 import { MODEL_NAMES, syncStore } from './inventory.js';
+import { captureForDataset } from './camera.js';
+import { captureBedRef, hasBedRef } from './bed-clear.js';
 import type { StoreOption } from './store.js';
 
 db.exec(`
@@ -33,6 +35,9 @@ CREATE TABLE IF NOT EXISTS part_stock (        -- parts on hand, per colour ('' 
 // Phase 1 kept one on-hand number per part: move it to the no-colour row once.
 db.exec(`INSERT OR IGNORE INTO part_stock (part_id, colour, qty) SELECT id, '', on_hand FROM parts WHERE on_hand > 0`);
 db.exec(`UPDATE parts SET on_hand = 0`);
+// Per-printer auto-start opt-in (camera-confirmed bed-clear -> load + start the next job).
+if (!(db.prepare('PRAGMA table_info(printer_job_settings)').all() as any[]).some((c: any) => c.name === 'auto_start'))
+  db.exec('ALTER TABLE printer_job_settings ADD COLUMN auto_start INTEGER NOT NULL DEFAULT 0');
 
 // ---------------------------------------------------------------------------
 // Colours: store colour names (from options whose group mentions "colour") -> hex.
@@ -67,17 +72,19 @@ function sameMaterial(want: string, have: string): boolean {
 // ---------------------------------------------------------------------------
 // Printers
 
-interface JobSettings { available: boolean; bedClear: boolean; bedClearAt: number | null; manualMaterial: string; manualColour: string }
+interface JobSettings { available: boolean; bedClear: boolean; bedClearAt: number | null; manualMaterial: string; manualColour: string; autoStart: boolean }
 function settings(printerId: number): JobSettings {
   const r = db.prepare('SELECT * FROM printer_job_settings WHERE printer_id = ?').get(printerId) as any;
   return { available: !!r?.available, bedClear: !!r?.bed_clear, bedClearAt: r?.bed_clear_at ?? null,
-    manualMaterial: r?.manual_material ?? '', manualColour: r?.manual_colour ?? '' };
+    manualMaterial: r?.manual_material ?? '', manualColour: r?.manual_colour ?? '', autoStart: !!r?.auto_start };
 }
-function saveSettings(printerId: number, patch: Partial<Record<'available' | 'bed_clear' | 'bed_clear_at' | 'manual_material' | 'manual_colour', any>>) {
+function saveSettings(printerId: number, patch: Partial<Record<'available' | 'bed_clear' | 'bed_clear_at' | 'manual_material' | 'manual_colour' | 'auto_start', any>>) {
   db.prepare('INSERT OR IGNORE INTO printer_job_settings (printer_id) VALUES (?)').run(printerId);
   for (const [k, v] of Object.entries(patch)) db.prepare(`UPDATE printer_job_settings SET ${k} = ? WHERE printer_id = ?`).run(v, printerId);
 }
 
+export function autoStartOn(printerId: number): boolean { return settings(printerId).autoStart; }
+export function markBedClear(printerId: number) { saveSettings(printerId, { bed_clear: 1, bed_clear_at: Date.now() }); }
 const IDLE = ['standby', 'complete', 'cancelled'];
 export const ACTIVE_JOB = ['loading', 'loaded', 'printing', 'printed'];
 /** The store job a printer is holding (loaded, printing or printed and not yet confirmed). */
@@ -88,7 +95,7 @@ const busy = (s: LiveState) => !!s.preparing || s.state === 'printing' || s.stat
 
 export interface PrinterReadiness {
   id: number; name: string; model: string | null; modelName: string | null; state: string; online: boolean;
-  available: boolean; bedClear: boolean; ready: boolean; why: string | null;
+  available: boolean; bedClear: boolean; autoStart: boolean; hasBedRef: boolean; ready: boolean; why: string | null;
   filamentSource: 'printer' | 'manual' | 'none'; spools: (Spool & { colourName: string | null })[];
   manualMaterial: string; manualColour: string;
 }
@@ -116,7 +123,7 @@ export function readiness(fleet: Fleet, s: LiveState, colours: Record<string, st
     : null;
   return { id: s.printerId, name: fleet.client(s.printerId)?.printer.name || `Printer ${s.printerId}`,
     model, modelName: model ? MODEL_NAMES[model] || model : null, state: s.preparing ? 'preparing' : s.state, online: s.online,
-    available: st.available, bedClear: st.bedClear, ready: !why, why, filamentSource: source, spools,
+    available: st.available, bedClear: st.bedClear, autoStart: st.autoStart, hasBedRef: hasBedRef(s.printerId), ready: !why, why, filamentSource: source, spools,
     manualMaterial: st.manualMaterial, manualColour: st.manualColour };
 }
 
@@ -322,6 +329,7 @@ export function registerStoreJobs(app: FastifyInstance, fleet: Fleet) {
     const id = Number((req.params as any).id); const b = (req.body || {}) as any;
     if (!state(id)) return reply.code(404).send({ error: 'Unknown printer.' });
     if (b.available !== undefined) saveSettings(id, { available: b.available ? 1 : 0 });
+    if (b.autoStart !== undefined) saveSettings(id, { auto_start: b.autoStart ? 1 : 0 });
     if (b.manualMaterial !== undefined) saveSettings(id, { manual_material: String(b.manualMaterial).trim().slice(0, 30) });
     if (b.manualColour !== undefined) saveSettings(id, { manual_colour: String(b.manualColour).trim().slice(0, 60) });
     if (b.available) printerFree();
@@ -333,6 +341,13 @@ export function registerStoreJobs(app: FastifyInstance, fleet: Fleet) {
     if (!s) return reply.code(404).send({ error: 'Unknown printer.' });
     if (busy(s)) return reply.code(409).send({ error: 'The printer is busy: the bed can only be cleared when nothing is printing.' });
     saveSettings(id, { bed_clear: 1, bed_clear_at: Date.now() });
+    // Teach this printer's empty-bed reference so the camera can auto-detect a clear bed later.
+    try {
+      await fleet.setLight(id, true).catch(() => {});
+      await new Promise(r => setTimeout(r, 800));
+      const shot = await captureForDataset(fleet.client(id)!.printer);
+      if (shot && captureBedRef(id, shot.body)) console.log(`[bed-clear] taught empty-bed reference for ${id}`);
+    } catch (e: any) { console.warn(`[bed-clear] teach failed for ${id}: ${e?.message || e}`); }
     fleet.refreshSpools(id);
     printerFree();
     return printerOut(id);

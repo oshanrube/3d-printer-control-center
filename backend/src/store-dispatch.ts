@@ -14,7 +14,9 @@ import { db, kv } from './db.js';
 import type { Fleet } from './fleet.js';
 import type { LiveState, PrinterEvent } from './types.js';
 import { HISTORY_KEY, inventoryLive, syncStore } from './inventory.js';
-import { activeJob, colourMap, plan, readiness, takeParts } from './store-jobs.js';
+import { activeJob, autoStartOn, colourMap, markBedClear, plan, readiness, takeParts } from './store-jobs.js';
+import { captureForDataset } from './camera.js';
+import { looksClear } from './bed-clear.js';
 import { reportPrinted } from './store.js';
 import { listGcodes, printState, startPrint, uploadGcode } from './printer-files.js';
 import type { StoreOption } from './store.js';
@@ -32,6 +34,50 @@ export const autoLoad = () => setting('store:autoload');
 
 type Report = (e: Omit<PrinterEvent, 'createdAt'>) => unknown;
 const IDLE = ['standby', 'complete', 'cancelled'];
+
+// ---- Camera bed-clear watcher: auto-advance the queue when a camera-confirmed clear bed appears ----
+const BED_CLEAR_EVERY_MS = 30_000;
+const CLEAR_CONFIRMATIONS = 2;            // consecutive clear reads (~60 s) before trusting it
+const clearStreak = new Map<number, number>();
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+
+async function watchBedClear(fleet: Fleet, report: Report): Promise<void> {
+  if (!autoLoad()) return;                                           // queue must be running at all
+  const states = fleet.getStates();
+  if (!states.some(s => autoStartOn(s.printerId))) return;           // no printer opted in
+  // Only cycle the camera/light when there's actually work waiting for a printer.
+  let pending = false;
+  try { pending = plan(fleet).jobs.some(j => !j.printer); } catch { pending = false; }
+  if (!pending) { clearStreak.clear(); return; }
+  for (const s of states) {
+    const id = s.printerId;
+    if (!autoStartOn(id)) { clearStreak.delete(id); continue; }
+    const r = readiness(fleet, s, colourMap());
+    // Candidate: online, idle (not preparing), available, filament known, no job, has a reference,
+    // and the bed isn't already confirmed clear.
+    if (!r.online || r.bedClear || !r.available || !r.hasBedRef || activeJob(id)
+        || !IDLE.includes(s.state) || s.preparing || !r.spools.length || s.filamentDetected === false) {
+      clearStreak.delete(id); continue;
+    }
+    try {
+      await fleet.setLight(id, true).catch(() => {});               // need light to see the bed
+      await sleep(700);
+      const shot = await captureForDataset(fleet.client(id)!.printer);
+      if (!shot) { clearStreak.delete(id); continue; }
+      const clear = looksClear(id, shot.body);
+      const n = clear ? (clearStreak.get(id) ?? 0) + 1 : 0;
+      clearStreak.set(id, n);
+      if (n >= CLEAR_CONFIRMATIONS) {
+        clearStreak.delete(id);
+        markBedClear(id);
+        console.log(`[bed-clear] ${r.name}: bed confirmed clear by camera (${CLEAR_CONFIRMATIONS}x); advancing queue`);
+        await syncStore('bed-clear');
+        await dispatch(fleet, report, 'camera bed-clear');           // loads + auto-starts (loadOne)
+      }
+    } catch (e: any) { clearStreak.delete(id); console.warn(`[bed-clear] check failed for ${id}: ${e?.message || e}`); }
+  }
+}
+
 
 function setJob(id: number, patch: Record<string, any>) {
   for (const [k, v] of Object.entries(patch)) db.prepare(`UPDATE store_jobs SET ${k} = ? WHERE id = ?`).run(v, id);
@@ -104,10 +150,21 @@ async function loadOne(fleet: Fleet, report: Report, job: ReturnType<typeof plan
     const how = reused ? 'already on the printer' : onPrinter ? 'uploaded (replaced an older copy)' : 'uploaded';
     setJob(id, { status: 'loaded', loaded_at: Date.now(), note: how });
     console.log(`[store] job ${id}: ${name} on ${printer.name} (${reason}): ${how}`);
-    report({ printerId: printer.id, printerName: printer.name, type: 'store_job', severity: 'warning',
-      title: `📦 ${printer.name}: ${partName(job.partId)} loaded`,
-      message: `${describe(jobRow(id))} for ${job.forItems.join(', ')} is ready on the printer (${jobRow(id).note}). Clear the bed and start “${name}”.`,
-      filename: name, actionTaken: 'loaded' });
+    if (autoStartOn(printer.id)) {
+      // The camera confirmed the bed is clear (that's why this printer was ready), so start it.
+      // The printer's own pre-print check (foreign-object scan on the K2) is a last backstop.
+      await startPrint(printer, name);
+      setJob(id, { note: `${how}; auto-started` });
+      report({ printerId: printer.id, printerName: printer.name, type: 'store_job', severity: 'warning',
+        title: `📦 ${printer.name}: auto-started ${partName(job.partId)}`,
+        message: `${describe(jobRow(id))} for ${job.forItems.join(', ')} was loaded (${how}) and started automatically after the camera confirmed the bed was clear.`,
+        filename: name, actionTaken: 'auto-started' });
+    } else {
+      report({ printerId: printer.id, printerName: printer.name, type: 'store_job', severity: 'warning',
+        title: `📦 ${printer.name}: ${partName(job.partId)} loaded`,
+        message: `${describe(jobRow(id))} for ${job.forItems.join(', ')} is ready on the printer (${jobRow(id).note}). Clear the bed and start “${name}”.`,
+        filename: name, actionTaken: 'loaded' });
+    }
   } catch (e: any) {
     setJob(id, { status: 'failed', ended_at: Date.now(), note: `loading failed: ${e?.message || e}` });
     report({ printerId: printer.id, printerName: printer.name, type: 'store_job', severity: 'warning',
@@ -232,6 +289,7 @@ export function registerStoreDispatch(app: FastifyInstance, fleet: Fleet, report
   // Planning triggers (a printer became ready, Sync now, ...) end in a sync; load after it.
   const afterSync = () => syncStore('dispatch').then(() => dispatch(fleet, report, 'sync')).catch(() => {});
   setInterval(() => { if (autoLoad()) dispatch(fleet, report, 'periodic check').catch(() => {}); }, 5 * 60_000);
+  setInterval(() => watchBedClear(fleet, report).catch(() => {}), BED_CLEAR_EVERY_MS);
 
   const jobsOut = () => {
     const rows = db.prepare(`SELECT * FROM store_jobs WHERE status IN ('loading','loaded','printing','printed') OR created_at > ? ORDER BY id DESC LIMIT 100`)

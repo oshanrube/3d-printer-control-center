@@ -41,7 +41,7 @@ export interface Part { id: number; name: string; material: string; notes: strin
 export interface Spool { slot: string; material: string; colour: string; name: string; colourName: string | null }
 export interface PrinterReadiness {
   id: number; name: string; model: string | null; modelName: string | null; state: string; online: boolean;
-  available: boolean; bedClear: boolean; ready: boolean; why: string | null;
+  available: boolean; bedClear: boolean; autoStart: boolean; hasBedRef: boolean; ready: boolean; why: string | null;
   filamentSource: 'printer' | 'manual' | 'none'; spools: Spool[]; manualMaterial: string; manualColour: string;
 }
 export interface PlannedJob {
@@ -147,7 +147,7 @@ export const api = {
   jobSettings: (patch: { autoLoad?: boolean }) => j<JobsState>('/api/store/jobs/settings', { method: 'POST', body: JSON.stringify(patch) }),
   dispatchNow: () => j<JobsState>('/api/store/dispatch', { method: 'POST' }),
   jobAction: (id: number, action: 'complete' | 'failed' | 'cancel' | 'start') => j<JobsState>(`/api/store/jobs/${id}/${action}`, { method: 'POST' }),
-  printerJobs: (id: number, patch: { available?: boolean; manualMaterial?: string; manualColour?: string }) =>
+  printerJobs: (id: number, patch: { available?: boolean; autoStart?: boolean; manualMaterial?: string; manualColour?: string }) =>
     j<PrinterReadiness>(`/api/store/printers/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
   bedCleared: (id: number) => j<PrinterReadiness>(`/api/store/printers/${id}/bed-cleared`, { method: 'POST' }),
   refreshFilament: (id: number) => j<PrinterReadiness>(`/api/store/printers/${id}/refresh-filament`, { method: 'POST' }),

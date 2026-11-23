@@ -18,12 +18,26 @@ export function StoreJobStrip({ r, storeColours, onChange, job }: { r: PrinterRe
           <input type="checkbox" checked={r.available} onChange={(e: any) => act(api.printerJobs(r.id, { available: e.currentTarget.checked }), 'Saving')} />
           Store jobs
         </label>
+        {r.available && (
+          <label class="inv-check" title="When the camera sees the bed is clear, load AND start the next job automatically. Clear the bed once with the button below to teach the camera this printer's empty bed.">
+            <input type="checkbox" checked={r.autoStart} onChange={(e: any) => act(api.printerJobs(r.id, { autoStart: e.currentTarget.checked }), 'Saving')} />
+            🤖 Auto-start
+          </label>
+        )}
         <span class={r.ready ? 'job-ok' : 'muted'}>{r.ready ? '✅ ready for the next job' : r.available ? `⏳ ${r.why}` : ''}</span>
         <div class="spacer" />
         {r.available && idle && !r.bedClear && (
-          <button class="btn btn-sm btn-primary" onClick={() => act(api.bedCleared(r.id), 'Saving')}>Bed cleared</button>
+          <button class="btn btn-sm btn-primary" title={r.autoStart ? "Confirm the bed is empty and teach the camera what a clear bed looks like" : "Confirm the bed is empty"} onClick={() => act(api.bedCleared(r.id), 'Saving')}>Bed cleared</button>
         )}
       </div>
+      {r.available && r.autoStart && (
+        <div class="muted job-autostart">
+          {!r.hasBedRef ? '📷 Clear the bed once and press “Bed cleared” to teach the camera this printer’s empty bed.'
+            : r.bedClear ? '📷 Bed is clear — the next queued job will load and start automatically.'
+            : idle ? '📷 Watching the camera: clear the bed and it will auto-start the next job.'
+            : '🤖 Auto-start on: will advance the queue once this print ends and the bed is clear.'}
+        </div>
+      )}
       {job && (
         <div class={`job-now job-${job.status}`}>
           📦 <b>{jobLabel(job)}</b>
