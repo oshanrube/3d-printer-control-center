@@ -609,6 +609,9 @@ export function App() {
   }, []);
   const [push, setPush] = useState(pushStatus());
   const [theme, setTheme] = useState(document.documentElement.getAttribute('data-theme') || 'dark');
+  const [sortBy, setSortBy] = useState(() => localStorage.getItem('printerSort') || 'status');
+  const [query, setQuery] = useState('');
+  const changeSort = (v: string) => { setSortBy(v); try { localStorage.setItem('printerSort', v); } catch {} };
 
   const toggleTheme = () => {
     const next = theme === 'dark' ? 'light' : 'dark';
@@ -642,7 +645,20 @@ export function App() {
     else counts.ready++;
   }
   const order = (p: Printer) => p.live?.preparing ? 0 : ({ printing: 0, paused: 1, complete: 2, standby: 3, error: 3, cancelled: 4, offline: 5 } as any)[p.live?.state || 'offline'] ?? 5;
-  const sorted = [...printers].sort((a, b) => order(a) - order(b));
+  // Lower sorts first; missing values use `dflt` so idle/offline printers fall to the bottom of a value sort.
+  const num = (v: number | null | undefined, dflt: number) => (v === null || v === undefined ? dflt : v);
+  const SORTS: Record<string, { label: string; cmp: (a: Printer, b: Printer) => number }> = {
+    status: { label: 'Status', cmp: (a, b) => order(a) - order(b) || a.name.localeCompare(b.name) },
+    name: { label: 'Name (A–Z)', cmp: (a, b) => a.name.localeCompare(b.name) },
+    progress: { label: 'Progress', cmp: (a, b) => num(b.live?.progress, -1) - num(a.live?.progress, -1) || a.name.localeCompare(b.name) },
+    eta: { label: 'Time left', cmp: (a, b) => num(a.live?.etaSeconds, Infinity) - num(b.live?.etaSeconds, Infinity) || a.name.localeCompare(b.name) },
+    nozzle: { label: 'Nozzle temp', cmp: (a, b) => num(b.live?.extruderTemp, -1) - num(a.live?.extruderTemp, -1) || a.name.localeCompare(b.name) },
+    bed: { label: 'Bed temp', cmp: (a, b) => num(b.live?.bedTemp, -1) - num(a.live?.bedTemp, -1) || a.name.localeCompare(b.name) },
+    chamber: { label: 'Chamber temp', cmp: (a, b) => num(b.live?.chamber?.temp, -1) - num(a.live?.chamber?.temp, -1) || a.name.localeCompare(b.name) },
+  };
+  const q = query.trim().toLowerCase();
+  const visible = q ? printers.filter(p => p.name.toLowerCase().includes(q)) : printers;
+  const sorted = [...visible].sort((SORTS[sortBy] || SORTS.status).cmp);
 
   return (
     <div class="app">
@@ -674,6 +690,20 @@ export function App() {
       <main>
         {route.page === 'inventory' ? <InventoryPage tab={route.tab} /> : <>
         {printers.length === 0 && <p class="muted" style="text-align:center;padding:40px">No printers yet. Click Add or Scan.</p>}
+        {printers.length > 0 && (
+          <div class="printer-tools">
+            <input class="inv-search" type="search" placeholder="🔍 Search printers by name…" value={query}
+              onInput={(e: any) => setQuery(e.currentTarget.value)} />
+            <label class="sort-by">Sort
+              <select value={sortBy} onChange={(e: any) => changeSort(e.currentTarget.value)}>
+                {Object.entries(SORTS).map(([k, v]) => <option value={k}>{v.label}</option>)}
+              </select>
+            </label>
+          </div>
+        )}
+        {printers.length > 0 && sorted.length === 0 && (
+          <p class="muted" style="text-align:center;padding:30px">No printers match “{query}”.</p>
+        )}
         <div class="grid">
           {sorted.map((p) => <PrinterCard key={p.id} printer={p} onEdit={(pr) => setModal({ kind: 'printer', p: pr })}
             toLabel={newestToLabel(p.id)} onLabelled={loadLabels} onLater={(id) => setLater(new Set([...later, id]))}

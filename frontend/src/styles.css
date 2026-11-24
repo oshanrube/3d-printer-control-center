@@ -48,6 +48,10 @@ body{font-family:var(--font);color:var(--text);background:var(--bg);min-height:1
 /* Grid + cards */
 main{margin-top:16px}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:var(--gap);align-items:start}
+.printer-tools{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:var(--gap)}
+.printer-tools .inv-search{flex:1;min-width:180px;max-width:360px}
+.printer-tools .sort-by{display:inline-flex;align-items:center;gap:6px;font-size:.85rem;color:var(--text-dim);white-space:nowrap}
+.printer-tools .sort-by select{padding:8px 10px;background:var(--surface-2);color:var(--text);border:1px solid var(--border);border-radius:8px;font:inherit}
 .card{position:relative;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:16px;box-shadow:var(--shadow-sm);overflow:hidden}
 .card::before{content:"";position:absolute;inset:0 0 auto 0;height:3px;background:var(--st-disabled);transition:background .25s}
 .card.printing::before{background:var(--st-printing)} .card.ready::before,.card.standby::before{background:var(--st-ready)}
