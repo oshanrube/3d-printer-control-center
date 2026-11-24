@@ -266,6 +266,24 @@ async function complete(j: any, fleet: Fleet, report: Report) {
   console.log(`[store] job ${j.id} completed: ${note}`);
 }
 
+// The owner acknowledged a finished/cancelled print on the printer's own screen (the "OK" in the
+// dialog). Klipper reports that as complete|cancelled -> standby. Since the owner clears the bed
+// before tapping OK, mirror the dashboard "Bed cleared" button: mark the bed clear and advance the
+// queue (dispatch still checks full readiness, so nothing loads onto a busy printer or one holding
+// a job). We deliberately do NOT re-teach the empty-bed reference (a dashboard-only action) and NOT
+// auto-"Complete" the finished job (confirming parts into store stock stays manual).
+async function onFinishAck(fleet: Fleet, report: Report, s: LiveState) {
+  if (!autoLoad()) return;                         // queue off entirely
+  const id = s.printerId;
+  const r = readiness(fleet, s, colourMap());
+  if (!r.available) return;                        // printer isn't taking store jobs
+  markBedClear(id);
+  fleet.refreshSpools(id);
+  console.log(`[ack] ${r.name}: finished-print dialog acknowledged on the screen -> bed marked clear; checking the queue`);
+  await syncStore('finish-ack');
+  await dispatch(fleet, report, 'printer finish OK');
+}
+
 // ---------------------------------------------------------------------------
 // Routes and triggers
 
@@ -283,7 +301,14 @@ export function registerStoreDispatch(app: FastifyInstance, fleet: Fleet, report
   if (stale.changes) console.log(`[store] ${stale.changes} interrupted upload(s) marked cancelled; they will be loaded again`);
   const prev = new Map<number, string>();
   fleet.on('state', (s: LiveState) => {
-    track(fleet, report, s, prev.get(s.printerId));
+    const was = prev.get(s.printerId);
+    track(fleet, report, s, was);
+    // "OK" on the printer's own finished/cancelled dialog shows up as complete|cancelled -> standby
+    // (verified 2026-11-24: only acknowledging the dialog leaves that state; a new print or restart
+    // is the only other way out). The owner clears the bed before tapping OK, so treat it like the
+    // dashboard "Bed cleared" button and advance the queue.
+    if ((was === 'complete' || was === 'cancelled') && s.state === 'standby')
+      onFinishAck(fleet, report, s).catch(e => console.warn('[ack]', e?.message || e));
     prev.set(s.printerId, s.state);
   });
   // Planning triggers (a printer became ready, Sync now, ...) end in a sync; load after it.
