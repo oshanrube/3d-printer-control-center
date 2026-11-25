@@ -1,5 +1,6 @@
 import webpush from 'web-push';
 import { kv, pushRepo } from './db.js';
+import { sendNtfy } from './ntfy.js';
 
 let publicKey = '';
 
@@ -47,6 +48,8 @@ export async function sendPush(payload: PushPayload): Promise<PushResult> {
   const subs = pushRepo.all();
   const data = JSON.stringify(payload);
   const result: PushResult = { total: subs.length, sent: 0, failures: [], removed: 0 };
+  // ntfy runs alongside Web Push (alarm-grade delivery + Wear OS); no-op if NTFY_* isn't set.
+  const ntfyP = sendNtfy(payload);
   await Promise.all(subs.map(async (s) => {
     let service = 'push service';
     try { service = new URL(s.endpoint).host; } catch { /* keep default */ }
@@ -65,5 +68,11 @@ export async function sendPush(payload: PushPayload): Promise<PushResult> {
       console.warn(`[push] ${service} rejected notification: ${status ?? ''} ${error}`);
     }
   }));
+  const ntfy = await ntfyP;
+  if (ntfy) {   // channel configured: count it in the result so "sent to N/M" includes ntfy
+    result.total++;
+    if (ntfy.ok) result.sent++;
+    else { result.failures.push({ service: 'ntfy', error: ntfy.error || 'failed' }); console.warn(`[push] ntfy rejected: ${ntfy.error}`); }
+  }
   return result;
 }

@@ -27,6 +27,10 @@ services:
       # - IDLE_OFF_MIN=10        # light + switchable fans off after this long idle (0 = never)
       # - DATASET_SNAPSHOT_SEC=20
       - VAPID_SUBJECT=${VAPID_SUBJECT:-mailto:admin@local}
+      # ntfy push channel (alarm-grade alerts + Wear OS). URL/topic/token in ./.env.
+      - NTFY_URL=${NTFY_URL:-}
+      - NTFY_TOPIC=${NTFY_TOPIC:-}
+      - NTFY_TOKEN=${NTFY_TOKEN:-}
       # AI failure detection. Secrets live in ./.env (gitignored).
       # Stage 1: Obico failure detector on the Pi's NPU (the `detector` service; enabled when OBICO_TOKEN is set).
       - OBICO_URL=${OBICO_URL:-http://127.0.0.1:3333}
