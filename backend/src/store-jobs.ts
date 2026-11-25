@@ -180,9 +180,19 @@ export function plan(fleet: Fleet) {
   // Plates already on their way count like parts on hand.
   for (const j of db.prepare(`SELECT part_id, colour, SUM(units) u FROM store_jobs WHERE status IN ('loading','loaded','printing','printed') GROUP BY part_id, colour`).all() as any[])
     onHand.set(`${j.part_id}|${j.colour}`, (onHand.get(`${j.part_id}|${j.colour}`) ?? 0) + j.u);
-  const failures = new Map<string, number>();
-  for (const j of db.prepare(`SELECT part_id, colour, COUNT(*) n FROM store_jobs WHERE status = 'failed' AND ended_at > ? GROUP BY part_id, colour`).all(Date.now() - 86400e3) as any[])
-    failures.set(`${j.part_id}|${j.colour}`, j.n);
+  // Per-printer failure hold: a plate is held FROM A PRINTER after 3 failed prints of it (same
+  // part + colour) on that printer SINCE the printer's last successful print of it — so a successful
+  // print on that printer resets its counter. A 24 h floor also ages failures out without a success.
+  // Keyed per printer, so one bad printer never blocks the plate on the others.
+  const lastOk = new Map<string, number>();            // printerId|partId|colour -> last completed ended_at
+  for (const j of db.prepare(`SELECT printer_id, part_id, colour, MAX(ended_at) t FROM store_jobs WHERE status = 'completed' GROUP BY printer_id, part_id, colour`).all() as any[])
+    lastOk.set(`${j.printer_id}|${j.part_id}|${j.colour ?? ''}`, j.t);
+  const failByPrinter = new Map<string, number>();     // printerId|partId|colour -> failures since that printer's last success (within 24 h)
+  for (const j of db.prepare(`SELECT printer_id, part_id, colour, ended_at FROM store_jobs WHERE status = 'failed' AND ended_at > ?`).all(Date.now() - 86400e3) as any[]) {
+    const k = `${j.printer_id}|${j.part_id}|${j.colour ?? ''}`;
+    if (j.ended_at > (lastOk.get(k) ?? 0)) failByPrinter.set(k, (failByPrinter.get(k) ?? 0) + 1);
+  }
+  const failedOn = (printerId: number, partId: number, colour: string | null) => failByPrinter.get(`${printerId}|${partId}|${colour ?? ''}`) ?? 0;
 
   // Managed items below their minimum. Print order (owner, 2026-11-17): the item's priority
   // (High / Normal / Low) first; within it, the first unit of every out-of-stock item before
@@ -268,11 +278,13 @@ export function plan(fleet: Fleet) {
           && (!n.colour || (p.filamentSource === 'manual' ? sp.colourName === n.colour : !!wantHex && sameColour(wantHex, sp.colour))));
         return ok ? null : 'filament does not match';
       };
-      const failed = failures.get(`${n.partId}|${n.colour ?? ''}`) ?? 0;
-      const pick = failed >= 3 ? undefined : free.find(p => !fits(p));
+      // A free printer that fits and isn't on a per-printer failure hold (3+ fails since its last success).
+      const fitting = free.filter(p => !fits(p));
+      const pick = fitting.find(p => failedOn(p.id, n.partId, n.colour) < 3);
+      const held = fitting.filter(p => failedOn(p.id, n.partId, n.colour) >= 3);
       let reason: string | null = null;
       if (pick) free.splice(free.indexOf(pick), 1);
-      else if (failed >= 3) reason = `Failed ${failed} times in the last 24 h: check the printers and the file before it is tried again`;
+      else if (held.length) reason = `Held after 3 failed prints on ${held.map(p => p.name).join(' and ')} — a successful print there clears it (other printers can still take it)`;
       else if (!gcodeModels.get(n.partId)?.size) reason = 'No G-code uploaded for this part';
       else if (n.colour && !wantHex) reason = `Set a colour for “${n.colour}” in the colour table`;
       else if (!printers.some(p => p.model && gcodeModels.get(n.partId)!.has(p.model)))
