@@ -229,15 +229,21 @@ export class Fleet extends EventEmitter {
   }
 
   /**
-   * Switch a printer's light. Prefers Creality's own service so the touch screen
-   * stays in sync; falls back to Klipper's SET_PIN when that feed isn't connected.
+   * Switch a printer's light. The physical light is Klipper's `output_pin LED` on every model, so
+   * always drive it with SET_PIN; also push `lightSw` through Creality's feed to keep the touch
+   * screen in sync when it's connected.
+   *
+   * The K2 (F008) only follows SET_PIN for the actual light — its `:9999 lightSw` moves the screen
+   * state but NOT the light (verified 2026-11-25: SET_PIN darkened/re-lit the chamber; lightSw did
+   * not). The old code sent lightSw first and returned whenever the feed was up, so "off" never
+   * reached a K2's light. Sending both fixes the K2 and still keeps the K1-series screen in sync.
    */
   async setLight(id: number, on: boolean): Promise<'creality' | 'klipper'> {
     const e = this.entries.get(id);
     if (!e) throw new Error('unknown printer');
-    if (e.vendor.setLight(on)) return 'creality';
-    await e.client.gcode(`SET_PIN PIN=LED VALUE=${on ? 1 : 0}`);
-    return 'klipper';
+    const screen = e.vendor.setLight(on);                                        // :9999 lightSw -> screen
+    await e.client.gcode(`SET_PIN PIN=LED VALUE=${on ? 1 : 0}`).catch(() => {});  // the actual light
+    return screen ? 'creality' : 'klipper';
   }
 
   /** Printer model as reported by Creality's firmware feed (e.g. "K1C", "F008"), if known. */
