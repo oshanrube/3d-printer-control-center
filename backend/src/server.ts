@@ -13,6 +13,7 @@ import { printersRepo, eventsRepo, printsRepo, aiRepo } from './db.js';
 import type { AiAnalyzer } from './ai-analyzer.js';
 import type { RefComparer } from './ref-compare.js';
 import { getPublicKey, subscribe, unsubscribe, sendPush } from './push.js';
+import * as spool from './spool.js';
 import { fetchSnapshot } from './camera.js';
 import { scanSubnet } from './scan.js';
 import type { Fleet } from './fleet.js';
@@ -145,6 +146,15 @@ export function buildServer(fleet: Fleet, ai: { current?: AiAnalyzer } = {}, ref
     if (!engine.current) return reply.code(503).send({ error: 'Not ready yet.' });
     const r = await engine.current.confirmOk(id);
     return r.ok ? r : reply.code(409).send(r);
+  });
+
+  // Mark a fresh spool (weight in grams + material): resets the remaining-filament estimate.
+  app.post('/api/printers/:id/spool', async (req, reply) => {
+    const id = Number((req.params as any).id);
+    const b = (req.body || {}) as any;
+    const grams = Number(b.grams);
+    if (!(grams > 0) || grams > 100000) return reply.code(400).send({ error: 'grams must be a positive number' });
+    return spool.setSpool(id, grams, String(b.material || '').slice(0, 20));
   });
 
   // Blank localhost page for the WebRTC relay (WebCodecs needs a secure context).

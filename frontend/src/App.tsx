@@ -3,7 +3,7 @@ import { createPortal } from 'preact/compat';
 import { api, FAILURE_REASONS, type Printer, type PrinterEvent, type StoppedPrint } from './api';
 import { InventoryPage, INVENTORY_TABS, type InventoryTab } from './Inventory';
 import { StoreJobStrip } from './StoreJobs';
-import type { PrinterReadiness, StoreJob } from './api';
+import type { PrinterReadiness, StoreJob, LiveState } from './api';
 import { useStore } from './store';
 import { enablePush, pushStatus } from './push';
 
@@ -112,6 +112,40 @@ function Camera({ printer }: { printer: Printer }) {
 }
 
 /* ---------- printer card ---------- */
+function FilamentBar({ printer, s, job }: { printer: Printer; s?: LiveState | null; job?: PrinterReadiness }) {
+  const [editing, setEditing] = useState(false);
+  const [grams, setGrams] = useState(1000);
+  const [busy, setBusy] = useState(false);
+  if (!s?.online) return null;
+  const sp = s.spool;
+  const save = () => {
+    const material = sp?.material || job?.spools?.[0]?.material || 'ABS';
+    setBusy(true);
+    api.setSpool(printer.id, grams, material).then(() => setEditing(false)).catch((e: any) => alert(`Couldn't set spool: ${e?.message || e}`)).finally(() => setBusy(false));
+  };
+  const low = sp ? sp.pct < 0.12 : false;
+  return (
+    <div class="filament">
+      <div class="fil-top">
+        {sp
+          ? <><span class={low ? 'fil-low' : ''}>🧵 <b>{sp.remainingG} g</b> left</span>
+              <span class="muted">{[sp.material, `${Math.round(sp.pct * 100)}%`].filter(Boolean).join(' · ')}</span></>
+          : <span class="muted">🧵 Spool weight not set</span>}
+        <div class="spacer" />
+        <button class="chip" title={sp ? 'Replace with a fresh spool' : 'Set the spool weight'} onClick={() => { setGrams(1000); setEditing(!editing); }}>{sp ? '↻' : 'Set spool'}</button>
+      </div>
+      {sp && <div class={`bar fil-bar ${low ? 'low' : ''}`}><div class="fill" style={{ width: `${sp.pct * 100}%` }} /></div>}
+      {editing && (
+        <div class="fil-edit">
+          New spool: <input type="number" value={grams} min="1" step="50" onInput={(e: any) => setGrams(Number(e.currentTarget.value))} /> g
+          <button class="btn btn-sm btn-primary" disabled={busy || !(grams > 0)} onClick={save}>{busy ? '…' : 'Save'}</button>
+          <span class="muted">resets the gauge to full</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function PrinterCard({ printer, onEdit, toLabel, onLabelled, onLater, job, storeJob, storeColours, onJob }: {
   printer: Printer; onEdit: (p: Printer) => void;
   toLabel?: StoppedPrint; onLabelled: () => void; onLater: (id: number) => void;
@@ -195,6 +229,7 @@ function PrinterCard({ printer, onEdit, toLabel, onLabelled, onLater, job, store
         <div class="stat"><div class="k">💡 Light</div><div class="v">{s?.peripherals?.light === undefined ? '—' : s.peripherals.light > 0 ? 'On' : 'Off'}</div></div>
       </div>
       {s?.online && s.fans && Object.keys(s.fans).length > 0 && <div class="fan-line">💨 {fmtFans(s.fans)}</div>}
+      <FilamentBar printer={printer} s={s} job={job} />
       {(s?.fault || (st === 'error' && s?.errorText)) && (
         <div class="fault-banner" title={s!.fault?.message || undefined}>
           ⚠️ {s!.fault ? <b>Error {s!.fault.code}</b> : <b>Printer error</b>}: {s!.fault?.description || s!.errorText}

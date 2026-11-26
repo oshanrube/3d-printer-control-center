@@ -77,6 +77,14 @@ main{margin-top:16px}
 .bar{height:8px;background:var(--surface-3);border-radius:999px;overflow:hidden}
 .fill{height:100%;background:linear-gradient(90deg,var(--accent),color-mix(in srgb,var(--accent) 55%,#fff));border-radius:999px;transition:width .5s}
 .card.printing .fill{background:linear-gradient(90deg,var(--st-printing),#ffd27a)}
+.filament{margin-top:10px}
+.fil-top{display:flex;align-items:center;gap:8px;font-size:.85rem}
+.fil-low{color:var(--st-offline);font-weight:600}
+.fil-bar{height:6px;margin-top:4px}
+.fil-bar .fill,.card.printing .fil-bar .fill{background:var(--st-ready)}
+.fil-bar.low .fill,.card.printing .fil-bar.low .fill{background:var(--st-offline)}
+.fil-edit{display:flex;align-items:center;gap:8px;margin-top:6px;font-size:.82rem;flex-wrap:wrap}
+.fil-edit input{width:78px;padding:5px 8px;background:var(--surface-2);color:var(--text);border:1px solid var(--border);border-radius:7px;font:inherit}
 
 .stats{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .stat{background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px 11px}

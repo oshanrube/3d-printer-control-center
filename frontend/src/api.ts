@@ -3,6 +3,8 @@ export interface LiveState {
   filename?: string | null; progress: number; printDuration: number; totalDuration: number;
   etaSeconds?: number | null; bedTemp: number; bedTarget: number;
   extruderTemp: number; extruderTarget: number; filamentDetected?: boolean | null;
+  filamentUsed?: number;
+  spool?: { totalG: number; usedG: number; remainingG: number; pct: number; material: string; setAt: number } | null;
   fault?: { code: number; message: string; description: string } | null; vendorBusy?: boolean;
   vendorFile?: string | null; preparing?: boolean;
   errorText?: string;
@@ -93,6 +95,9 @@ export const api = {
   updatePrinter: (id: number, patch: any) =>
     j<Printer>(`/api/printers/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
   removePrinter: (id: number) => j(`/api/printers/${id}`, { method: 'DELETE' }),
+  setSpool: (id: number, grams: number, material: string) =>
+    j<{ totalG: number; usedG: number; remainingG: number; pct: number; material: string; setAt: number }>(
+      `/api/printers/${id}/spool`, { method: 'POST', body: JSON.stringify({ grams, material }) }),
   // Resolves { ok, pending? }; throws with the printer's own reason when it refuses.
   action: async (id: number, a: 'pause' | 'resume' | 'cancel'): Promise<{ ok: boolean; pending?: boolean }> => {
     const res = await fetch(`/api/printers/${id}/${a}`, { method: 'POST' });

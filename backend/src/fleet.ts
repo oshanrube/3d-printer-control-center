@@ -3,6 +3,7 @@ import { MoonrakerClient } from './moonraker.js';
 import { CrealityClient, describeFault } from './creality.js';
 import { describeKlipperError } from './errors.js';
 import { printersRepo } from './db.js';
+import * as spool from './spool.js';
 import type { AiVerdict, LiveState, Printer, PrintState, RefVerdict } from './types.js';
 
 function deepMerge(target: any, source: any): any {
@@ -177,6 +178,7 @@ export class Fleet extends EventEmitter {
       extruderTemp: Math.round((ext.temperature ?? 0) * 10) / 10,
       extruderTarget: ext.target ?? 0,
       filamentDetected,
+      filamentUsed: ps.filament_used ?? 0,
       ...this.vendorFields(entry),
       ai: entry.ai ?? null,
       reference: entry.reference ?? null,
@@ -209,6 +211,9 @@ export class Fleet extends EventEmitter {
       // The firmware mirrors Klipper errors as its own fault code; describe it with Klipper's message.
       if (next.fault) next.fault = { ...next.fault, description: next.errorText };
     }
+    // Remaining-filament estimate: accumulate what this print has extruded, then attach the spool state.
+    spool.recordUsage(id, next.filamentUsed);
+    next.spool = spool.info(id);
     entry.state = next;
     this.emitState(id);
   }

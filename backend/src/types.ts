@@ -59,6 +59,8 @@ export interface LiveState {
   extruderTemp: number;
   extruderTarget: number;
   filamentDetected?: boolean | null; // from runout sensor if present
+  filamentUsed?: number;             // this print's filament_used (mm), from Klipper
+  spool?: { totalG: number; usedG: number; remainingG: number; pct: number; material: string; setAt: number } | null;
   // From Creality's own firmware feed (:9999). undefined = feed unavailable.
   fault?: { code: number; message: string; description: string } | null;
   vendorBusy?: boolean;       // firmware is running a job Klipper can't see yet (pre-print heat/level)
