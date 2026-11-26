@@ -211,8 +211,12 @@ export class Fleet extends EventEmitter {
       // The firmware mirrors Klipper errors as its own fault code; describe it with Klipper's message.
       if (next.fault) next.fault = { ...next.fault, description: next.errorText };
     }
-    // Remaining-filament estimate: accumulate what this print has extruded, then attach the spool state.
-    spool.recordUsage(id, next.filamentUsed);
+    // Remaining-filament estimate: accumulate only while actually printing. A brief drop to the
+    // offline/placeholder state makes filamentUsed default to 0; counting that would read the jump
+    // back to the real value as a huge "delta" and re-add the whole print's usage on every reconnect
+    // (the 8x over-count seen 2026-11-26). filament_used is monotonic within a print, so gating on
+    // printing/paused keeps deltas sane and a new print (lower value) just re-baselines.
+    if (next.online && (next.state === 'printing' || next.state === 'paused')) spool.recordUsage(id, next.filamentUsed);
     next.spool = spool.info(id);
     entry.state = next;
     this.emitState(id);
