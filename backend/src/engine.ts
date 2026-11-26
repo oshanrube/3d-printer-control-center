@@ -174,21 +174,30 @@ export class Engine {
    */
   private checkPausedTooLong(s: LiveState) {
     const t = this.track(s.printerId);
+    // Tie the paused-clock to THIS print. Bug (2026-11-26): it was a plain per-printer timestamp, so
+    // an earlier pause's `pausedsince:<id>` lingered in kv, a backend restart wiped the in-memory
+    // flags (so the cleanup below never cleared it), and the next print's fresh pause read that
+    // hours-old timestamp and was cancelled "after 5 min". The print id survives restarts (the engine
+    // rejoins the open print row) and differs between prints, even reprints of the same file.
+    const printKey = t.printId ? String(t.printId) : '';
     if (config.pauseCancelMin > 0 && s.online && s.state === 'paused') {
       if (!t.pausedSince) {
-        // Survive a backend restart mid-pause so the clock isn't reset.
-        t.pausedSince = Number(kv.get(`pausedsince:${s.printerId}`)) || Date.now();
-        kv.set(`pausedsince:${s.printerId}`, String(t.pausedSince));
+        // Restore the clock across a restart, but only when the saved value belongs to THIS print.
+        const [savedTs, savedKey] = (kv.get(`pausedsince:${s.printerId}`) || '').split('|');
+        t.pausedSince = (printKey && savedKey === printKey && Number(savedTs)) ? Number(savedTs) : Date.now();
+        kv.set(`pausedsince:${s.printerId}`, `${t.pausedSince}|${printKey}`);
       }
       if (!t.autoCancelPaused && Date.now() - t.pausedSince >= config.pauseCancelMin * 60_000) {
         t.autoCancelPaused = true;   // the 'cancelled' transition explains why and ends the print
         console.warn(`[engine] ${this.printerName(s.printerId)} paused ${Math.round((Date.now() - t.pausedSince) / 60_000)} min (> ${config.pauseCancelMin}); cancelling`);
         this.fleet.client(s.printerId)?.cancel().catch(e => console.warn(`[engine] auto-cancel failed: ${e?.message || e}`));
       }
-    } else if (s.state !== 'paused' && (t.pausedSince || t.autoCancelPaused)) {
+    } else if (s.state !== 'paused') {
+      // Not paused: clear the clock. Always clear the persisted value (not only when the in-memory
+      // flags are set), so a restart that wiped those flags still can't leave a stale timestamp.
       t.pausedSince = undefined;
       t.autoCancelPaused = false;
-      kv.set(`pausedsince:${s.printerId}`, '');
+      if (kv.get(`pausedsince:${s.printerId}`)) kv.set(`pausedsince:${s.printerId}`, '');
     }
   }
 
