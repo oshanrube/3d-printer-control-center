@@ -59,11 +59,16 @@ async function watchBedClear(fleet: Fleet, report: Report): Promise<void> {
         || !IDLE.includes(s.state) || s.preparing || !r.spools.length || s.filamentDetected === false) {
       clearStreak.delete(id); continue;
     }
+    // Turn the light on only for the capture, then put it back as it was: a printer waiting with a
+    // yet-to-be-cleared bed used to get its light re-lit every 30 s here, fighting the idle-off
+    // watchdog forever (the light never went off and idle_off events spammed).
+    const lightWasOff = !((s.peripherals?.light ?? 0) > 0);
+    const restoreLight = () => { if (lightWasOff) fleet.setLight(id, false).catch(() => {}); };
     try {
       await fleet.setLight(id, true).catch(() => {});               // need light to see the bed
       await sleep(700);
       const shot = await captureForDataset(fleet.client(id)!.printer);
-      if (!shot) { clearStreak.delete(id); continue; }
+      if (!shot) { restoreLight(); clearStreak.delete(id); continue; }
       const clear = looksClear(id, shot.body);
       const n = clear ? (clearStreak.get(id) ?? 0) + 1 : 0;
       clearStreak.set(id, n);
@@ -72,9 +77,11 @@ async function watchBedClear(fleet: Fleet, report: Report): Promise<void> {
         markBedClear(id);
         console.log(`[bed-clear] ${r.name}: bed confirmed clear by camera (${CLEAR_CONFIRMATIONS}x); advancing queue`);
         await syncStore('bed-clear');
-        await dispatch(fleet, report, 'camera bed-clear');           // loads + auto-starts (loadOne)
+        await dispatch(fleet, report, 'camera bed-clear');           // loads + auto-starts; print-start manages the light
+      } else {
+        restoreLight();   // still waiting for a clear bed: don't leave the light on while idle
       }
-    } catch (e: any) { clearStreak.delete(id); console.warn(`[bed-clear] check failed for ${id}: ${e?.message || e}`); }
+    } catch (e: any) { restoreLight(); clearStreak.delete(id); console.warn(`[bed-clear] check failed for ${id}: ${e?.message || e}`); }
   }
 }
 
